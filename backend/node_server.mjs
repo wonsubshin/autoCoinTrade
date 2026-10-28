@@ -266,6 +266,104 @@ function checkAndHaltIfZeroBalance() {
   };
 }
 
+function createUpbitJwt(accessKey, secretKey) {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({
+      access_key: accessKey,
+      nonce: crypto.randomUUID(),
+    })
+  ).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", secretKey)
+    .update(`${header}.${payload}`)
+    .digest("base64url");
+  return `${header}.${payload}.${signature}`;
+}
+
+async function fetchUpbitAccountBalance() {
+  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  } catch {}
+
+  const accessKey = String(cfg.access_key || "").trim();
+  const secretKey = String(cfg.secret_key || "").trim();
+  const timeoutMs = Number(cfg.request_timeout_sec || 5) * 1000;
+  const checkedAt = nowKSTString();
+
+  if (
+    !accessKey ||
+    !secretKey ||
+    accessKey === "YOUR_UPBIT_ACCESS_KEY" ||
+    secretKey === "YOUR_UPBIT_SECRET_KEY"
+  ) {
+    return {
+      success: false,
+      krw_balance: null,
+      krw_locked: null,
+      krw_total: null,
+      message: "업비트 Open API Key가 설정되지 않았습니다 (config/upbit_config.json 확인 필요)",
+      checked_at: checkedAt,
+    };
+  }
+
+  try {
+    await new Promise((r) => setTimeout(r, 120)); // Rate limit 0.12s
+    const token = createUpbitJwt(accessKey, secretKey);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const resp = await fetch("https://api.upbit.com/v1/accounts", {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (resp.status === 200) {
+      const accounts = await resp.json();
+      const krwAcc = Array.isArray(accounts)
+        ? accounts.find((a) => a.currency === "KRW")
+        : null;
+      const available = Math.floor(Number(krwAcc?.balance || 0));
+      const locked = Math.floor(Number(krwAcc?.locked || 0));
+      const total = Math.floor(Number(krwAcc?.balance || 0) + Number(krwAcc?.locked || 0));
+      return {
+        success: true,
+        krw_balance: available,
+        krw_locked: locked,
+        krw_total: total,
+        message: "업비트 실계좌 원화(KRW) 잔고 조회 완료",
+        checked_at: checkedAt,
+      };
+    } else {
+      const errBody = await resp.json().catch(() => ({}));
+      const errMsg = errBody?.error?.message || errBody?.error?.name || `HTTP ${resp.status}`;
+      return {
+        success: false,
+        krw_balance: null,
+        krw_locked: null,
+        krw_total: null,
+        message: `업비트 계좌 잔고 조회 실패: ${errMsg}`,
+        checked_at: checkedAt,
+      };
+    }
+  } catch (err) {
+    return {
+      success: false,
+      krw_balance: null,
+      krw_locked: null,
+      krw_total: null,
+      message: `업비트 계좌 잔고 조회 통신 오류: ${err.message}`,
+      checked_at: checkedAt,
+    };
+  }
+}
+
 async function checkUpbitStatus() {
   const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
   let cfg = {};
@@ -384,6 +482,11 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/upbit/status" && req.method === "GET") {
       const status = await checkUpbitStatus();
       return sendJson(res, 200, status);
+    }
+
+    if (pathname === "/api/upbit/account" && req.method === "GET") {
+      const accountInfo = await fetchUpbitAccountBalance();
+      return sendJson(res, 200, accountInfo);
     }
 
     if (pathname === "/api/system/overview" && req.method === "GET") {

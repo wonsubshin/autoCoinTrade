@@ -134,6 +134,11 @@ def get_upbit_connection_status():
     return upbit_client.check_connection_status()
 
 
+@app.get("/api/upbit/account")
+def get_upbit_account_balance():
+    return upbit_client.get_krw_account_balance()
+
+
 # ------------------------------------------------------------------
 # 3. 시스템 및 봇 상태 / 거래 시작·중단 / 잔고 0 이하 체크 (요구사항 15, 20, 21, 22)
 # ------------------------------------------------------------------

@@ -209,6 +209,15 @@ export default function App() {
   const [totalCapitalInput, setTotalCapitalInput] = useState("");
   const [ratioInputs, setRatioInputs] = useState({});
   const [botEditForms, setBotEditForms] = useState({});
+  const [upbitAccount, setUpbitAccount] = useState({
+    loading: false,
+    success: false,
+    krw_balance: null,
+    krw_locked: null,
+    krw_total: null,
+    message: "",
+    checked_at: "",
+  });
   const fileInputRef = useRef(null);
 
   // 6) Modal Popup 상태 (요구사항 20: 거래 시작/중지 모달, 요구사항 21: 잔고 0 이하 중지 알림 모달)
@@ -374,9 +383,49 @@ export default function App() {
     }
   };
 
+  const fetchUpbitAccount = async () => {
+    setUpbitAccount((prev) => ({ ...prev, loading: true }));
+    try {
+      const resp = await fetch(`${API_BASE}/api/upbit/account`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setUpbitAccount({
+          loading: false,
+          success: Boolean(data.success),
+          krw_balance: data.krw_balance ?? null,
+          krw_locked: data.krw_locked ?? null,
+          krw_total: data.krw_total ?? null,
+          message: data.message || "",
+          checked_at: data.checked_at || "",
+        });
+      } else {
+        setUpbitAccount({
+          loading: false,
+          success: false,
+          krw_balance: null,
+          krw_locked: null,
+          krw_total: null,
+          message: `업비트 계좌 잔고 조회 실패 (HTTP ${resp.status})`,
+          checked_at: "",
+        });
+      }
+    } catch (err) {
+      setUpbitAccount({
+        loading: false,
+        success: false,
+        krw_balance: null,
+        krw_locked: null,
+        krw_total: null,
+        message: `백엔드 서버 연결 실패: ${err.message}`,
+        checked_at: "",
+      });
+    }
+  };
+
   useEffect(() => {
     if (!authenticated) return;
     fetchUpbitStatus();
+    fetchUpbitAccount();
     fetchOverviewAndBots(true);
     fetchTrades(selectedBotId);
     fetchStatistics();
@@ -415,6 +464,7 @@ export default function App() {
       fetchStatistics();
     } else if (menuKey === "settings") {
       fetchOverviewAndBots(false);
+      fetchUpbitAccount();
     }
   };
 
@@ -1048,6 +1098,84 @@ export default function App() {
               </h3>
               <form onSubmit={handleSaveAllocation}>
                 <div className="settings-grid">
+                  {/* 실제 업비트에서 가져온 계좌 잔고 (수정 불가 / 읽기 전용 영역) */}
+                  <div
+                    className="form-row"
+                    style={{
+                      background: "#0f172a",
+                      border: "1px solid #334155",
+                      borderRadius: "10px",
+                      padding: "14px",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: "8px",
+                        flexWrap: "wrap",
+                        gap: "8px",
+                      }}
+                    >
+                      <label style={{ margin: 0, display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span>🔒 실제 업비트 계좌 잔고 (KRW)</span>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            background: "#1e293b",
+                            color: "#94a3b8",
+                            border: "1px solid #475569",
+                            borderRadius: "4px",
+                            padding: "2px 6px",
+                          }}
+                        >
+                          읽기 전용 · 수정 불가
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ padding: "4px 10px", fontSize: "12px" }}
+                        onClick={fetchUpbitAccount}
+                        disabled={upbitAccount.loading}
+                      >
+                        {upbitAccount.loading ? "조회 중..." : "실계좌 잔고 새로고침"}
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      readOnly
+                      disabled
+                      className="form-input"
+                      style={{
+                        background: "#1e293b",
+                        color: upbitAccount.success ? "#38bdf8" : "#f87171",
+                        fontWeight: 700,
+                        cursor: "not-allowed",
+                        opacity: 1,
+                        WebkitTextFillColor: upbitAccount.success ? "#38bdf8" : "#f87171",
+                      }}
+                      value={
+                        upbitAccount.loading
+                          ? "업비트 실계좌 잔고 조회 중..."
+                          : upbitAccount.success && upbitAccount.krw_balance !== null
+                          ? `${Number(upbitAccount.krw_balance).toLocaleString("ko-KR")}원 (총 원화: ${Number(
+                              upbitAccount.krw_total ?? upbitAccount.krw_balance
+                            ).toLocaleString("ko-KR")}원 / 주문중: ${Number(
+                              upbitAccount.krw_locked ?? 0
+                            ).toLocaleString("ko-KR")}원)`
+                          : upbitAccount.message || "업비트 계좌 잔고 정보를 불러올 수 없습니다."
+                      }
+                    />
+                    {upbitAccount.checked_at && (
+                      <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "6px" }}>
+                        최근 조회 시각: {upbitAccount.checked_at} | {upbitAccount.message}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="form-row">
                     <label>
                       전체 운용 원금 (KRW) — 설정 금액:{" "}

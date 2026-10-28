@@ -206,6 +206,80 @@ class UpbitOpenAPIClient:
             and self.access_key != "YOUR_UPBIT_ACCESS_KEY"
         )
 
+    def get_krw_account_balance(self) -> Dict[str, Any]:
+        """
+        업비트 Open API(/v1/accounts)를 호출하여 실제 계좌의 원화(KRW) 잔고를 조회합니다. (읽기 전용 표시용)
+        """
+        self.reload_config()
+        checked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if (
+            not self.access_key
+            or not self.secret_key
+            or self.access_key == "YOUR_UPBIT_ACCESS_KEY"
+            or self.secret_key == "YOUR_UPBIT_SECRET_KEY"
+        ):
+            return {
+                "success": False,
+                "krw_balance": None,
+                "krw_locked": None,
+                "krw_total": None,
+                "message": "업비트 Open API Key가 설정되지 않았습니다 (config/upbit_config.json 확인 필요)",
+                "checked_at": checked_at,
+            }
+
+        try:
+            self._respect_rate_limit()
+            headers = self._build_auth_headers()
+            resp = requests.get(
+                f"{self.BASE_URL}/accounts",
+                headers=headers,
+                timeout=self.timeout_sec,
+            )
+            if resp.status_code == 200:
+                accounts = resp.json()
+                krw_acc = next(
+                    (a for a in accounts if isinstance(a, dict) and a.get("currency") == "KRW"),
+                    None,
+                )
+                available = math.floor(float(krw_acc.get("balance", 0.0))) if krw_acc else 0
+                locked = math.floor(float(krw_acc.get("locked", 0.0))) if krw_acc else 0
+                total = math.floor(
+                    (float(krw_acc.get("balance", 0.0)) + float(krw_acc.get("locked", 0.0)))
+                    if krw_acc
+                    else 0.0
+                )
+                return {
+                    "success": True,
+                    "krw_balance": available,
+                    "krw_locked": locked,
+                    "krw_total": total,
+                    "message": "업비트 실계좌 원화(KRW) 잔고 조회 완료",
+                    "checked_at": checked_at,
+                }
+            else:
+                try:
+                    err_body = resp.json()
+                    err_msg = err_body.get("error", {}).get("message") or f"HTTP {resp.status_code}"
+                except Exception:
+                    err_msg = f"HTTP {resp.status_code}"
+                return {
+                    "success": False,
+                    "krw_balance": None,
+                    "krw_locked": None,
+                    "krw_total": None,
+                    "message": f"업비트 계좌 잔고 조회 실패: {err_msg}",
+                    "checked_at": checked_at,
+                }
+        except Exception as exc:
+            return {
+                "success": False,
+                "krw_balance": None,
+                "krw_locked": None,
+                "krw_total": None,
+                "message": f"업비트 계좌 잔고 조회 통신 오류: {exc}",
+                "checked_at": checked_at,
+            }
+
     # ------------------------------------------------------------------
     # 시세 / 유동성(거래대금) 필터 / 캔들 조회 (count=8, iloc[-8] 지원)
     # ------------------------------------------------------------------
