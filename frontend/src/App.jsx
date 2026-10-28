@@ -1525,12 +1525,12 @@ export default function App() {
 
                       {b.bot_id === "bot_volatility" && (
                         <div className="form-row">
-                          <label>변동성 돌파 K 계수 (0.1 ~ 0.9)</label>
+                          <label>변동성 돌파 K 계수 (0.1 ~ 0.9 / 추천: 0.4)</label>
                           <input
                             type="number"
                             step="0.05"
                             className="form-input"
-                            placeholder="K 계수 입력"
+                            placeholder="K 계수 입력 (추천: 0.4)"
                             value={form.config?.k_value ?? ""}
                             onChange={(e) =>
                               updateConfigField(
@@ -1544,12 +1544,12 @@ export default function App() {
 
                       {b.bot_id === "bot_dual_momentum" && (
                         <div className="form-row">
-                          <label>절대 모멘텀 최소 수익률 기준 (%)</label>
+                          <label>절대 모멘텀 최소 수익률 기준 (% / 추천: 1.5%)</label>
                           <input
                             type="number"
                             step="0.1"
                             className="form-input"
-                            placeholder="최소 수익률(%) 입력"
+                            placeholder="최소 수익률(%) 입력 (추천: 1.5)"
                             value={form.config?.abs_momentum_threshold_pct ?? ""}
                             onChange={(e) =>
                               updateConfigField(
@@ -1563,12 +1563,12 @@ export default function App() {
 
                       {b.bot_id === "bot_bollinger_reversal" && (
                         <div className="form-row">
-                          <label>볼린저 밴드 표준편차 배수 (σ)</label>
+                          <label>볼린저 밴드 표준편차 배수 (σ / 추천: 2.0)</label>
                           <input
                             type="number"
                             step="0.1"
                             className="form-input"
-                            placeholder="표준편차 배수 입력"
+                            placeholder="표준편차 배수 입력 (추천: 2.0)"
                             value={form.config?.bb_std ?? ""}
                             onChange={(e) =>
                               updateConfigField(
@@ -1586,7 +1586,7 @@ export default function App() {
                         style={{ width: "100%", marginTop: "6px" }}
                         onClick={() => handleSaveBotConfig(b.bot_id)}
                       >
-                        [{form.nickname}] 설정 저장
+                        [{form.nickname || b.name}] 설정 저장
                       </button>
                     </div>
                   );

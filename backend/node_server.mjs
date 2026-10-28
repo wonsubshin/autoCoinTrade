@@ -130,10 +130,93 @@ function initializeDatabase() {
     db.exec("DELETE FROM system_settings;");
   }
 
-  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM bots").get();
-  if (countRow && countRow.cnt > 0) return;
+  const recommendedBots = [
+    {
+      bot_id: "bot_volatility",
+      name: "필터 결합형 변동성 돌파 봇",
+      nickname: "돌파봇-알파",
+      strategy_type: "VOLATILITY_BREAKOUT",
+      description: "장중 단타 / 1일 보유 | 변동성 돌파(K=0.4) + 20일 이평선 추세 필터 전략",
+      allocation_ratio: 40,
+      min_volume_krw: 10000000000,
+      stop_loss_pct: 2.5,
+      take_profit_pct: 4.5,
+      config_json: JSON.stringify({
+        k_value: 0.4,
+        ma_period: 20,
+        volume_multiplier: 1.2,
+        order_ratio: 0.3,
+      }),
+    },
+    {
+      bot_id: "bot_dual_momentum",
+      name: "듀얼 모멘텀 스윙 봇",
+      nickname: "모멘텀봇-베타",
+      strategy_type: "DUAL_MOMENTUM",
+      description: "상대 모멘텀(상위 2종목) + 절대 모멘텀(+1.5% 이상) 스윙 전략",
+      allocation_ratio: 40,
+      min_volume_krw: 15000000000,
+      stop_loss_pct: 3.5,
+      take_profit_pct: 7.0,
+      config_json: JSON.stringify({
+        lookback_days: 8,
+        abs_momentum_threshold_pct: 1.5,
+        top_n: 2,
+        order_ratio: 0.35,
+      }),
+    },
+    {
+      bot_id: "bot_bollinger_reversal",
+      name: "고변동성 볼린저 밴드 역추세 봇",
+      nickname: "볼린저봇-감마",
+      strategy_type: "BOLLINGER_REVERSAL",
+      description: "고변동성 코인 볼린저 밴드(20, 2.0σ) 15분봉 단기 반등 전략",
+      allocation_ratio: 20,
+      min_volume_krw: 8000000000,
+      stop_loss_pct: 2.0,
+      take_profit_pct: 3.5,
+      config_json: JSON.stringify({
+        bb_period: 20,
+        bb_std: 2.0,
+        bb_stddev: 2.0,
+        candle_unit: "minutes/15",
+        order_krw: 15000,
+      }),
+    },
+  ];
 
   const now = nowKSTString();
+  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM bots").get();
+  if (countRow && countRow.cnt > 0) {
+    // 봇 설정이 비어 있는 경우(min_volume_krw = 0 또는 nickname = '') 추천값으로 업데이트 저장
+    const updateRecommended = db.prepare(`
+      UPDATE bots
+      SET nickname = CASE WHEN nickname = '' THEN ? ELSE nickname END,
+          description = ?,
+          allocation_ratio = CASE WHEN allocation_ratio = 0 THEN ? ELSE allocation_ratio END,
+          min_volume_krw = CASE WHEN min_volume_krw = 0 THEN ? ELSE min_volume_krw END,
+          stop_loss_pct = CASE WHEN stop_loss_pct = 0 THEN ? ELSE stop_loss_pct END,
+          take_profit_pct = CASE WHEN take_profit_pct = 0 THEN ? ELSE take_profit_pct END,
+          config_json = CASE WHEN config_json = '{}' OR config_json = '' THEN ? ELSE config_json END,
+          updated_at = ?
+      WHERE bot_id = ?
+    `);
+    for (const rb of recommendedBots) {
+      updateRecommended.run(
+        rb.nickname,
+        rb.description,
+        rb.allocation_ratio,
+        rb.min_volume_krw,
+        rb.stop_loss_pct,
+        rb.take_profit_pct,
+        rb.config_json,
+        now,
+        rb.bot_id
+      );
+    }
+    return;
+  }
+
   const setSetting = db.prepare(
     "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)"
   );
@@ -153,57 +236,25 @@ function initializeDatabase() {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  insertBot.run(
-    "bot_volatility",
-    "필터 결합형 변동성 돌파 봇",
-    "",
-    "VOLATILITY_BREAKOUT",
-    "장중 단타 / 1일 보유 | 변동성 돌파 전략",
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    "{}",
-    "대기 중",
-    now
-  );
-  insertBot.run(
-    "bot_dual_momentum",
-    "듀얼 모멘텀 스윙 봇",
-    "",
-    "DUAL_MOMENTUM",
-    "상대 모멘텀 + 절대 모멘텀 스윙 전략",
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    "{}",
-    "대기 중",
-    now
-  );
-  insertBot.run(
-    "bot_bollinger_reversal",
-    "고변동성 볼린저 밴드 역추세 봇",
-    "",
-    "BOLLINGER_REVERSAL",
-    "고변동성 코인 볼린저 밴드 분봉 단기 반등 전략",
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    "{}",
-    "대기 중",
-    now
-  );
+  for (const rb of recommendedBots) {
+    insertBot.run(
+      rb.bot_id,
+      rb.name,
+      rb.nickname,
+      rb.strategy_type,
+      rb.description,
+      rb.allocation_ratio,
+      0,
+      0,
+      0,
+      rb.min_volume_krw,
+      rb.stop_loss_pct,
+      rb.take_profit_pct,
+      rb.config_json,
+      "대기 중",
+      now
+    );
+  }
 }
 
 initializeDatabase();
