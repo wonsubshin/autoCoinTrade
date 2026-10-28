@@ -852,10 +852,24 @@ const server = http.createServer(async (req, res) => {
       );
       if (ratioSum > 100.0) {
         return sendJson(res, 400, {
+          success: false,
           detail: `봇별 자금 분배 비율의 합계(${ratioSum}%)는 100%를 초과할 수 없습니다.`,
         });
       }
       const flooredTotal = Math.floor(Number(body.total_capital || 0));
+      const accountInfo = await fetchUpbitAccountBalance();
+      if (!accountInfo.success || accountInfo.krw_balance === null) {
+        return sendJson(res, 400, {
+          success: false,
+          detail: `업비트 실계좌 잔고를 조회할 수 없어 전체 운용 원금을 저장할 수 없습니다. (${accountInfo.message || "실계좌 조회 실패"})`,
+        });
+      }
+      if (flooredTotal > Number(accountInfo.krw_balance)) {
+        return sendJson(res, 400, {
+          success: false,
+          detail: `설정하려는 전체 운용 원금(${flooredTotal.toLocaleString("ko-KR")}원)이 실제 업비트 계좌 잔고(${Number(accountInfo.krw_balance).toLocaleString("ko-KR")}원)보다 높아서 저장할 수 없습니다.`,
+        });
+      }
       const now = nowKSTString();
       db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('total_capital', ?, ?)").run(
         String(flooredTotal),

@@ -559,6 +559,26 @@ export default function App() {
       return;
     }
 
+    if (!upbitAccount.success || upbitAccount.krw_balance === null) {
+      showModal(
+        "운용 원금 저장 불가",
+        `업비트 실계좌 잔고가 조회되지 않아 전체 운용 원금을 저장할 수 없습니다.\n(${upbitAccount.message || "업비트 실계좌 잔고 조회 필요"})`,
+        "danger"
+      );
+      return;
+    }
+
+    if (numericCapital > Number(upbitAccount.krw_balance)) {
+      showModal(
+        "운용 원금 설정 오류 — 업비트 잔고 초과",
+        `입력한 전체 운용 원금(${numericCapital.toLocaleString("ko-KR")}원)이 실제 업비트 계좌 잔고(${Number(
+          upbitAccount.krw_balance
+        ).toLocaleString("ko-KR")}원)보다 높습니다.\n전체 운용 원금은 업비트 계좌 잔고 이하로만 저장할 수 있습니다.`,
+        "danger"
+      );
+      return;
+    }
+
     try {
       const resp = await fetch(`${API_BASE}/api/settings/allocation`, {
         method: "PUT",
@@ -1300,21 +1320,38 @@ export default function App() {
                   <div className="form-row">
                     <label>
                       전체 운용 원금 (KRW) — 설정 금액:{" "}
-                      <strong style={{ color: "#4ade80" }}>
+                      <strong
+                        style={{
+                          color:
+                            upbitAccount.success &&
+                            upbitAccount.krw_balance !== null &&
+                            parseNumericInput(totalCapitalInput) > Number(upbitAccount.krw_balance)
+                              ? "#ef4444"
+                              : "#4ade80",
+                        }}
+                      >
                         {formatWithCommas(totalCapitalInput)
                           ? `${formatWithCommas(totalCapitalInput)}원`
                           : "미설정"}
                       </strong>{" "}
-                      (0 이하 입력 시 전체 봇 거래 중지)
+                      (업비트 계좌 잔고 이하만 저장 가능 / 0 이하 입력 시 전체 봇 거래 중지)
                     </label>
                     <input
                       type="text"
                       inputMode="numeric"
                       className="form-input"
-                      placeholder="운용 원금을 입력하세요"
+                      placeholder="운용 원금을 입력하세요 (업비트 계좌 잔고 이하)"
                       value={formatWithCommas(totalCapitalInput)}
                       onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
                     />
+                    {upbitAccount.success &&
+                      upbitAccount.krw_balance !== null &&
+                      parseNumericInput(totalCapitalInput) > Number(upbitAccount.krw_balance) && (
+                        <div style={{ fontSize: "12px", color: "#f87171", marginTop: "4px", fontWeight: 600 }}>
+                          ⚠️ 입력한 금액이 실제 업비트 계좌 잔고(
+                          {Number(upbitAccount.krw_balance).toLocaleString("ko-KR")}원)를 초과하여 저장할 수 없습니다.
+                        </div>
+                      )}
                   </div>
                   {bots.map((b) => {
                     const rawRatio = ratioInputs[b.bot_id];

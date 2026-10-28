@@ -240,6 +240,19 @@ def update_capital_allocation(payload: AllocationUpdateRequest):
             detail=f"봇별 자금 분배 비율의 합계({ratio_sum}%)는 100%를 초과할 수 없습니다.",
         )
 
+    floored_total = math.floor(float(payload.total_capital or 0))
+    account_info = upbit_client.get_krw_account_balance()
+    if not account_info.get("success") or account_info.get("krw_balance") is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"업비트 실계좌 잔고를 조회할 수 없어 전체 운용 원금을 저장할 수 없습니다. ({account_info.get('message', '실계좌 조회 실패')})",
+        )
+    if floored_total > int(account_info["krw_balance"]):
+        raise HTTPException(
+            status_code=400,
+            detail=f"설정하려는 전체 운용 원금({floored_total:,}원)이 실제 업비트 계좌 잔고({int(account_info['krw_balance']):,}원)보다 높아서 저장할 수 없습니다.",
+        )
+
     bots = db_manager.update_capital_allocations(
         total_capital=payload.total_capital,
         ratios=payload.ratios,
