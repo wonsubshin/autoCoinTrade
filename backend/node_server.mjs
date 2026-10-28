@@ -281,6 +281,32 @@ function createUpbitJwt(accessKey, secretKey) {
   return `${header}.${payload}.${signature}`;
 }
 
+let cachedValidKrwMarkets = new Set();
+
+async function getValidKrwMarkets(timeoutMs = 5000) {
+  if (cachedValidKrwMarkets.size > 0) {
+    return cachedValidKrwMarkets;
+  }
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const resp = await fetch("https://api.upbit.com/v1/market/all?isDetails=false", {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (resp.status === 200) {
+      const list = await resp.json();
+      if (Array.isArray(list)) {
+        cachedValidKrwMarkets = new Set(
+          list.map((m) => m.market).filter((m) => typeof m === "string" && m.startsWith("KRW-"))
+        );
+      }
+    }
+  } catch {}
+  return cachedValidKrwMarkets;
+}
+
 async function fetchUpbitAccountBalance() {
   const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
   let cfg = {};
@@ -302,6 +328,11 @@ async function fetchUpbitAccountBalance() {
     return {
       success: false,
       krw_balance: null,
+      orderable_krw: null,
+      total_buy_krw: null,
+      total_eval_krw: null,
+      eval_profit_krw: null,
+      eval_profit_pct: null,
       krw_locked: null,
       krw_total: null,
       message: "업비트 Open API Key가 설정되지 않았습니다 (config/upbit_config.json 확인 필요)",
@@ -326,18 +357,79 @@ async function fetchUpbitAccountBalance() {
 
     if (resp.status === 200) {
       const accounts = await resp.json();
-      const krwAcc = Array.isArray(accounts)
-        ? accounts.find((a) => a.currency === "KRW")
-        : null;
+      const accList = Array.isArray(accounts) ? accounts : [];
+      const krwAcc = accList.find((a) => a.currency === "KRW") || null;
       const available = Math.floor(Number(krwAcc?.balance || 0));
       const locked = Math.floor(Number(krwAcc?.locked || 0));
       const total = Math.floor(Number(krwAcc?.balance || 0) + Number(krwAcc?.locked || 0));
+
+      const coinHoldings = accList.filter(
+        (a) =>
+          a.currency !== "KRW" &&
+          Number(a.balance || 0) + Number(a.locked || 0) > 0
+      );
+
+      let totalBuySum = 0;
+      let totalEvalSum = 0;
+
+      if (coinHoldings.length > 0) {
+        const validMarkets = await getValidKrwMarkets(timeoutMs);
+        const targetMarkets = coinHoldings
+          .map((a) => `KRW-${a.currency}`)
+          .filter((m) => validMarkets.size === 0 || validMarkets.has(m));
+
+        const priceMap = new Map();
+        if (targetMarkets.length > 0) {
+          try {
+            await new Promise((r) => setTimeout(r, 120)); // Rate limit 0.12s
+            const tCtrl = new AbortController();
+            const tTimer = setTimeout(() => tCtrl.abort(), timeoutMs);
+            const tResp = await fetch(
+              `https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(targetMarkets.join(","))}`,
+              { signal: tCtrl.signal }
+            );
+            clearTimeout(tTimer);
+            if (tResp.status === 200) {
+              const tickers = await tResp.json();
+              if (Array.isArray(tickers)) {
+                for (const tk of tickers) {
+                  priceMap.set(tk.market, Number(tk.trade_price || 0));
+                }
+              }
+            }
+          } catch {}
+        }
+
+        for (const c of coinHoldings) {
+          const qty = Number(c.balance || 0) + Number(c.locked || 0);
+          const avgBuyPrice = Number(c.avg_buy_price || 0);
+          const buyAmt = qty * avgBuyPrice;
+          const mkt = `KRW-${c.currency}`;
+          const curPrice = priceMap.has(mkt) ? priceMap.get(mkt) : avgBuyPrice;
+          const evalAmt = qty * curPrice;
+
+          totalBuySum += buyAmt;
+          totalEvalSum += evalAmt;
+        }
+      }
+
+      const totalBuyKrw = Math.floor(totalBuySum);
+      const totalEvalKrw = Math.floor(totalEvalSum);
+      const evalProfitKrw = totalEvalKrw - totalBuyKrw;
+      const evalProfitPct =
+        totalBuyKrw > 0 ? Number(((evalProfitKrw / totalBuyKrw) * 100).toFixed(2)) : 0;
+
       return {
         success: true,
         krw_balance: available,
+        orderable_krw: available,
+        total_buy_krw: totalBuyKrw,
+        total_eval_krw: totalEvalKrw,
+        eval_profit_krw: evalProfitKrw,
+        eval_profit_pct: evalProfitPct,
         krw_locked: locked,
         krw_total: total,
-        message: "업비트 실계좌 원화(KRW) 잔고 조회 완료",
+        message: "업비트 실계좌 자산 및 잔고 조회 완료",
         checked_at: checkedAt,
       };
     } else {
@@ -346,6 +438,11 @@ async function fetchUpbitAccountBalance() {
       return {
         success: false,
         krw_balance: null,
+        orderable_krw: null,
+        total_buy_krw: null,
+        total_eval_krw: null,
+        eval_profit_krw: null,
+        eval_profit_pct: null,
         krw_locked: null,
         krw_total: null,
         message: `업비트 계좌 잔고 조회 실패: ${errMsg}`,
@@ -356,6 +453,11 @@ async function fetchUpbitAccountBalance() {
     return {
       success: false,
       krw_balance: null,
+      orderable_krw: null,
+      total_buy_krw: null,
+      total_eval_krw: null,
+      eval_profit_krw: null,
+      eval_profit_pct: null,
       krw_locked: null,
       krw_total: null,
       message: `업비트 계좌 잔고 조회 통신 오류: ${err.message}`,

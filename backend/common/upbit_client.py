@@ -208,7 +208,8 @@ class UpbitOpenAPIClient:
 
     def get_krw_account_balance(self) -> Dict[str, Any]:
         """
-        업비트 Open API(/v1/accounts)를 호출하여 실제 계좌의 원화(KRW) 잔고를 조회합니다. (읽기 전용 표시용)
+        업비트 Open API(/v1/accounts 및 /v1/ticker)를 호출하여 실제 계좌의
+        총 매수금액(total_buy_krw), 총 평가금액(total_eval_krw), 주문 가능 금액(orderable_krw / krw_balance)을 조회합니다.
         """
         self.reload_config()
         checked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -221,6 +222,11 @@ class UpbitOpenAPIClient:
             return {
                 "success": False,
                 "krw_balance": None,
+                "orderable_krw": None,
+                "total_buy_krw": None,
+                "total_eval_krw": None,
+                "eval_profit_krw": None,
+                "eval_profit_pct": None,
                 "krw_locked": None,
                 "krw_total": None,
                 "message": "업비트 Open API Key가 설정되지 않았습니다 (config/upbit_config.json 확인 필요)",
@@ -237,8 +243,9 @@ class UpbitOpenAPIClient:
             )
             if resp.status_code == 200:
                 accounts = resp.json()
+                acc_list = accounts if isinstance(accounts, list) else []
                 krw_acc = next(
-                    (a for a in accounts if isinstance(a, dict) and a.get("currency") == "KRW"),
+                    (a for a in acc_list if isinstance(a, dict) and a.get("currency") == "KRW"),
                     None,
                 )
                 available = math.floor(float(krw_acc.get("balance", 0.0))) if krw_acc else 0
@@ -248,12 +255,62 @@ class UpbitOpenAPIClient:
                     if krw_acc
                     else 0.0
                 )
+
+                coin_holdings = [
+                    a
+                    for a in acc_list
+                    if isinstance(a, dict)
+                    and a.get("currency") != "KRW"
+                    and (float(a.get("balance") or 0.0) + float(a.get("locked") or 0.0)) > 0
+                ]
+
+                total_buy_sum = 0.0
+                total_eval_sum = 0.0
+
+                if coin_holdings:
+                    target_markets = [f"KRW-{a.get('currency')}" for a in coin_holdings]
+                    price_map: Dict[str, float] = {}
+                    try:
+                        self._respect_rate_limit()
+                        t_resp = requests.get(
+                            f"{self.BASE_URL}/ticker",
+                            params={"markets": ",".join(target_markets)},
+                            timeout=self.timeout_sec,
+                        )
+                        if t_resp.status_code == 200:
+                            for tk in t_resp.json():
+                                price_map[tk["market"]] = float(tk.get("trade_price") or 0.0)
+                    except Exception:
+                        pass
+
+                    for c in coin_holdings:
+                        qty = float(c.get("balance") or 0.0) + float(c.get("locked") or 0.0)
+                        avg_buy_price = float(c.get("avg_buy_price") or 0.0)
+                        buy_amt = qty * avg_buy_price
+                        mkt = f"KRW-{c.get('currency')}"
+                        cur_price = price_map.get(mkt, avg_buy_price)
+                        eval_amt = qty * cur_price
+                        total_buy_sum += buy_amt
+                        total_eval_sum += eval_amt
+
+                total_buy_krw = math.floor(total_buy_sum)
+                total_eval_krw = math.floor(total_eval_sum)
+                eval_profit_krw = total_eval_krw - total_buy_krw
+                eval_profit_pct = (
+                    round((eval_profit_krw / total_buy_krw) * 100.0, 2) if total_buy_krw > 0 else 0.0
+                )
+
                 return {
                     "success": True,
                     "krw_balance": available,
+                    "orderable_krw": available,
+                    "total_buy_krw": total_buy_krw,
+                    "total_eval_krw": total_eval_krw,
+                    "eval_profit_krw": eval_profit_krw,
+                    "eval_profit_pct": eval_profit_pct,
                     "krw_locked": locked,
                     "krw_total": total,
-                    "message": "업비트 실계좌 원화(KRW) 잔고 조회 완료",
+                    "message": "업비트 실계좌 자산 및 잔고 조회 완료",
                     "checked_at": checked_at,
                 }
             else:
@@ -265,6 +322,11 @@ class UpbitOpenAPIClient:
                 return {
                     "success": False,
                     "krw_balance": None,
+                    "orderable_krw": None,
+                    "total_buy_krw": None,
+                    "total_eval_krw": None,
+                    "eval_profit_krw": None,
+                    "eval_profit_pct": None,
                     "krw_locked": None,
                     "krw_total": None,
                     "message": f"업비트 계좌 잔고 조회 실패: {err_msg}",
@@ -274,6 +336,11 @@ class UpbitOpenAPIClient:
             return {
                 "success": False,
                 "krw_balance": None,
+                "orderable_krw": None,
+                "total_buy_krw": None,
+                "total_eval_krw": None,
+                "eval_profit_krw": None,
+                "eval_profit_pct": None,
                 "krw_locked": None,
                 "krw_total": None,
                 "message": f"업비트 계좌 잔고 조회 통신 오류: {exc}",

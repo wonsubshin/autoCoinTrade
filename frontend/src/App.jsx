@@ -213,6 +213,11 @@ export default function App() {
     loading: false,
     success: false,
     krw_balance: null,
+    orderable_krw: null,
+    total_buy_krw: null,
+    total_eval_krw: null,
+    eval_profit_krw: null,
+    eval_profit_pct: null,
     krw_locked: null,
     krw_total: null,
     message: "",
@@ -393,6 +398,11 @@ export default function App() {
           loading: false,
           success: Boolean(data.success),
           krw_balance: data.krw_balance ?? null,
+          orderable_krw: data.orderable_krw ?? data.krw_balance ?? null,
+          total_buy_krw: data.total_buy_krw ?? null,
+          total_eval_krw: data.total_eval_krw ?? null,
+          eval_profit_krw: data.eval_profit_krw ?? null,
+          eval_profit_pct: data.eval_profit_pct ?? null,
           krw_locked: data.krw_locked ?? null,
           krw_total: data.krw_total ?? null,
           message: data.message || "",
@@ -403,6 +413,11 @@ export default function App() {
           loading: false,
           success: false,
           krw_balance: null,
+          orderable_krw: null,
+          total_buy_krw: null,
+          total_eval_krw: null,
+          eval_profit_krw: null,
+          eval_profit_pct: null,
           krw_locked: null,
           krw_total: null,
           message: `업비트 계좌 잔고 조회 실패 (HTTP ${resp.status})`,
@@ -414,6 +429,11 @@ export default function App() {
         loading: false,
         success: false,
         krw_balance: null,
+        orderable_krw: null,
+        total_buy_krw: null,
+        total_eval_krw: null,
+        eval_profit_krw: null,
+        eval_profit_pct: null,
         krw_locked: null,
         krw_total: null,
         message: `백엔드 서버 연결 실패: ${err.message}`,
@@ -432,6 +452,7 @@ export default function App() {
 
     const timer = setInterval(() => {
       fetchUpbitStatus();
+      fetchUpbitAccount();
       fetchTrades(selectedBotId);
     }, 6000);
     return () => clearInterval(timer);
@@ -459,6 +480,7 @@ export default function App() {
     localStorage.setItem("autoCoinTrade_menu", menuKey);
     if (menuKey === "trades") {
       fetchOverviewAndBots(true);
+      fetchUpbitAccount();
       fetchTrades(selectedBotId);
     } else if (menuKey === "stats") {
       fetchStatistics();
@@ -775,6 +797,105 @@ export default function App() {
                 <p className="page-desc">
                   봇별 탭으로 거래 내역을 확인하고 수동으로 거래 시작 및 중단을 제어합니다.
                 </p>
+              </div>
+            </div>
+
+            {/* 거래현황 상단: 업비트 실계좌 조회 요약 (총 매수금액 / 총 평가금액 / 주문 가능 금액) */}
+            <div className="card" style={{ marginBottom: "18px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "12px",
+                  flexWrap: "wrap",
+                  gap: "8px",
+                }}
+              >
+                <div style={{ fontSize: "15px", fontWeight: 700, color: "#f8fafc" }}>
+                  업비트 실계좌 자산 현황{" "}
+                  {upbitAccount.checked_at && (
+                    <span style={{ fontSize: "12px", fontWeight: 400, color: "#94a3b8", marginLeft: "8px" }}>
+                      (조회 시각: {upbitAccount.checked_at})
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "5px 12px", fontSize: "12px" }}
+                  onClick={fetchUpbitAccount}
+                  disabled={upbitAccount.loading}
+                >
+                  {upbitAccount.loading ? "조회 중..." : "업비트 자산 새로고침"}
+                </button>
+              </div>
+
+              {!upbitAccount.success && (
+                <div
+                  style={{
+                    fontSize: "12.5px",
+                    color: "#f87171",
+                    background: "rgba(239, 68, 68, 0.1)",
+                    border: "1px solid rgba(239, 68, 68, 0.3)",
+                    borderRadius: "8px",
+                    padding: "8px 12px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  {upbitAccount.message || "업비트 실계좌 정보를 불러오지 못했습니다."}
+                </div>
+              )}
+
+              <div
+                className="bot-meta-grid"
+                style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}
+              >
+                <div className="meta-item">
+                  <span className="meta-label">총 매수금액</span>
+                  <span className="meta-value" style={{ fontSize: "18px", color: "#f8fafc" }}>
+                    {upbitAccount.success && upbitAccount.total_buy_krw !== null
+                      ? `${Number(upbitAccount.total_buy_krw).toLocaleString("ko-KR")}원`
+                      : "-"}
+                  </span>
+                </div>
+
+                <div className="meta-item">
+                  <span className="meta-label">총 평가금액</span>
+                  <span
+                    className="meta-value"
+                    style={{
+                      fontSize: "18px",
+                      color:
+                        upbitAccount.success && upbitAccount.eval_profit_krw > 0
+                          ? "#ef4444"
+                          : upbitAccount.success && upbitAccount.eval_profit_krw < 0
+                          ? "#3b82f6"
+                          : "#f8fafc",
+                    }}
+                  >
+                    {upbitAccount.success && upbitAccount.total_eval_krw !== null
+                      ? `${Number(upbitAccount.total_eval_krw).toLocaleString("ko-KR")}원`
+                      : "-"}
+                    {upbitAccount.success && upbitAccount.eval_profit_krw !== null && (
+                      <span style={{ fontSize: "12.5px", marginLeft: "6px", fontWeight: 600 }}>
+                        ({upbitAccount.eval_profit_krw > 0 ? "+" : ""}
+                        {Number(upbitAccount.eval_profit_krw).toLocaleString("ko-KR")}원 /{" "}
+                        {upbitAccount.eval_profit_pct > 0 ? "+" : ""}
+                        {upbitAccount.eval_profit_pct}%)
+                      </span>
+                    )}
+                  </span>
+                </div>
+
+                <div className="meta-item">
+                  <span className="meta-label">주문 가능 금액</span>
+                  <span className="meta-value" style={{ fontSize: "18px", color: "#38bdf8" }}>
+                    {upbitAccount.success && upbitAccount.orderable_krw !== null
+                      ? `${Number(upbitAccount.orderable_krw).toLocaleString("ko-KR")}원`
+                      : "-"}
+                  </span>
+                </div>
               </div>
             </div>
 
