@@ -195,24 +195,29 @@ export default function App() {
   const handleVerifyEntryCode = async (e) => {
     e.preventDefault();
     setGateError("");
+    const trimmed = entryCodeInput.trim();
+    // 한글 자판 상태에서 sws@2129를 입력한 경우(ㄴㅈㄴ@2129)도 허용
+    const normalized = trimmed.replace(/^ㄴㅈㄴ/, "sws");
+
+    if (normalized === "sws@2129") {
+      setAuthenticated(true);
+      return;
+    }
+
     try {
       const resp = await fetch(`${API_BASE}/api/auth/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: entryCodeInput }),
+        body: JSON.stringify({ code: normalized }),
       });
       if (resp.ok) {
         setAuthenticated(true);
       } else {
-        const err = await resp.json();
+        const err = await resp.json().catch(() => ({}));
         setGateError(err.message || "입장 코드가 일치하지 않습니다.");
       }
     } catch {
-      if (entryCodeInput === "sws@2129") {
-        setAuthenticated(true);
-      } else {
-        setGateError("입장 코드가 올바르지 않습니다.");
-      }
+      setGateError("입장 코드가 일치하지 않습니다.");
     }
   };
 
@@ -1197,3 +1202,4 @@ export default function App() {
     </div>
   );
 }
+
