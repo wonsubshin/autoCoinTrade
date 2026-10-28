@@ -143,7 +143,7 @@ def get_system_overview():
     settings = db_manager.get_all_settings()
     bots = db_manager.get_bots()
     return {
-        "total_capital": int(float(settings.get("total_capital", "10000000"))),
+        "total_capital": int(float(settings.get("total_capital", "0"))),
         "zero_balance_halted": halt_info["halted"],
         "zero_balance_reason": halt_info["reason"],
         "stats_start_date": settings.get("stats_start_date", "2026-10-01"),

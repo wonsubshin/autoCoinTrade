@@ -133,13 +133,13 @@ class DatabaseManager:
                         nickname TEXT NOT NULL,
                         strategy_type TEXT NOT NULL,
                         description TEXT NOT NULL,
-                        allocation_ratio REAL NOT NULL DEFAULT 33.33,
+                        allocation_ratio REAL NOT NULL DEFAULT 0,
                         allocated_capital INTEGER NOT NULL DEFAULT 0,
                         virtual_krw INTEGER NOT NULL DEFAULT 0,
                         is_running INTEGER NOT NULL DEFAULT 0,
-                        min_volume_krw INTEGER NOT NULL DEFAULT 5000000000,
-                        stop_loss_pct REAL NOT NULL DEFAULT 3.0,
-                        take_profit_pct REAL NOT NULL DEFAULT 5.0,
+                        min_volume_krw INTEGER NOT NULL DEFAULT 0,
+                        stop_loss_pct REAL NOT NULL DEFAULT 0,
+                        take_profit_pct REAL NOT NULL DEFAULT 0,
                         config_json TEXT NOT NULL DEFAULT '{}',
                         last_status_msg TEXT NOT NULL DEFAULT '대기 중',
                         updated_at TEXT NOT NULL
@@ -203,13 +203,23 @@ class DatabaseManager:
         conn = self.get_connection()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        seed_check = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM trades WHERE buy_order_uuid LIKE 'seed-%'"
+        ).fetchone()
+        if seed_check and seed_check["cnt"] > 0:
+            with self.transaction() as tx:
+                tx.execute("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%'")
+                tx.execute("DELETE FROM trades WHERE buy_order_uuid LIKE 'seed-%'")
+                tx.execute("DELETE FROM bots")
+                tx.execute("DELETE FROM system_settings")
+
         row = conn.execute("SELECT COUNT(*) AS cnt FROM bots").fetchone()
         if row and row["cnt"] > 0:
             return
 
-        total_capital = 10000000  # 기본 총 운용 원금 1,000만 원
         default_settings = {
-            "total_capital": str(total_capital),
+            "total_capital": "0",
+            "capital_configured": "0",
             "zero_balance_halted": "0",
             "zero_balance_reason": "",
             "stats_start_date": "2026-10-01",
@@ -220,241 +230,47 @@ class DatabaseManager:
             {
                 "bot_id": "bot_volatility",
                 "name": "필터 결합형 변동성 돌파 봇",
-                "nickname": "변동성돌파 알파봇",
+                "nickname": "",
                 "strategy_type": "VOLATILITY_BREAKOUT",
-                "description": "장중 단타 / 1일 보유 | 전일 변동폭(k) 돌파 + 거래대금 및 추세 필터 결합 (count=8, iloc[-8])",
-                "allocation_ratio": 40.0,
-                "allocated_capital": math.floor(total_capital * 0.40),
-                "virtual_krw": math.floor(total_capital * 0.40),
+                "description": "장중 단타 / 1일 보유 | 변동성 돌파 전략",
+                "allocation_ratio": 0.0,
+                "allocated_capital": 0,
+                "virtual_krw": 0,
                 "is_running": 0,
-                "min_volume_krw": 10000000000,
-                "stop_loss_pct": 2.5,
-                "take_profit_pct": 4.5,
-                "config_json": json.dumps(
-                    {
-                        "k_value": 0.5,
-                        "candle_unit": "days",
-                        "candle_count": 8,
-                        "base_index_offset": -8,
-                        "max_positions": 2,
-                        "order_ratio_per_trade": 0.45,
-                        "holding_days": 1,
-                        "candidate_markets": ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-DOGE"],
-                    },
-                    ensure_ascii=False,
-                ),
+                "min_volume_krw": 0,
+                "stop_loss_pct": 0.0,
+                "take_profit_pct": 0.0,
+                "config_json": "{}",
             },
             {
                 "bot_id": "bot_dual_momentum",
                 "name": "듀얼 모멘텀 스윙 봇",
-                "nickname": "듀얼모멘텀 스윙봇",
+                "nickname": "",
                 "strategy_type": "DUAL_MOMENTUM",
-                "description": "상대 모멘텀 + 절대 모멘텀 결합 스윙 | iloc[-8] 대비 수익률 상위 종목 선별 진입",
-                "allocation_ratio": 40.0,
-                "allocated_capital": math.floor(total_capital * 0.40),
-                "virtual_krw": math.floor(total_capital * 0.40),
+                "description": "상대 모멘텀 + 절대 모멘텀 스윙 전략",
+                "allocation_ratio": 0.0,
+                "allocated_capital": 0,
+                "virtual_krw": 0,
                 "is_running": 0,
-                "min_volume_krw": 8000000000,
-                "stop_loss_pct": 3.5,
-                "take_profit_pct": 7.0,
-                "config_json": json.dumps(
-                    {
-                        "abs_momentum_threshold_pct": 1.2,
-                        "candle_unit": "minutes/240",
-                        "candle_count": 8,
-                        "base_index_offset": -8,
-                        "max_positions": 2,
-                        "order_ratio_per_trade": 0.45,
-                        "candidate_markets": ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-SUI", "KRW-AVAX"],
-                    },
-                    ensure_ascii=False,
-                ),
+                "min_volume_krw": 0,
+                "stop_loss_pct": 0.0,
+                "take_profit_pct": 0.0,
+                "config_json": "{}",
             },
             {
                 "bot_id": "bot_bollinger_reversal",
                 "name": "고변동성 볼린저 밴드 역추세 봇",
-                "nickname": "볼린저 단기반등봇",
+                "nickname": "",
                 "strategy_type": "BOLLINGER_REVERSAL",
-                "description": "분봉 단기 반등 매매 | 고변동성 코인 볼린저 밴드 하단 이탈 후 반등 진입 (count=8, iloc[-8])",
-                "allocation_ratio": 20.0,
-                "allocated_capital": math.floor(total_capital * 0.20),
-                "virtual_krw": math.floor(total_capital * 0.20),
+                "description": "고변동성 코인 볼린저 밴드 분봉 단기 반등 전략",
+                "allocation_ratio": 0.0,
+                "allocated_capital": 0,
+                "virtual_krw": 0,
                 "is_running": 0,
-                "min_volume_krw": 5000000000,
-                "stop_loss_pct": 2.0,
-                "take_profit_pct": 3.2,
-                "config_json": json.dumps(
-                    {
-                        "bb_period": 20,
-                        "bb_std": 2.0,
-                        "rsi_oversold": 32.0,
-                        "candle_unit": "minutes/15",
-                        "candle_count": 8,
-                        "base_index_offset": -8,
-                        "max_positions": 2,
-                        "order_ratio_per_trade": 0.45,
-                        "candidate_markets": ["KRW-SOL", "KRW-DOGE", "KRW-XRP", "KRW-SUI", "KRW-SHIB"],
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
-
-        # 2026.10.01 이후 초기 샘플 거래 내역 (일간/주간/월간 통계 그래프 및 다빈도 코인 손익 색상 확인용)
-        sample_trades = [
-            {
-                "bot_id": "bot_volatility",
-                "market": "KRW-BTC",
-                "buy_order_uuid": "seed-vol-001-buy",
-                "sell_order_uuid": "seed-vol-001-sell",
-                "buy_price": 94500000.0,
-                "buy_volume": "0.01058201",
-                "buy_amount": 1000000,
-                "buy_date": "2026-10-02 09:15:00",
-                "sell_price": 96200000.0,
-                "sell_volume": "0.01058201",
-                "sell_amount": 1017989,
-                "sell_date": "2026-10-03 08:59:10",
-                "profit_krw": 16980,
-                "profit_pct": 1.70,
-                "status": "COMPLETED",
-            },
-            {
-                "bot_id": "bot_volatility",
-                "market": "KRW-SOL",
-                "buy_order_uuid": "seed-vol-002-buy",
-                "sell_order_uuid": "seed-vol-002-sell",
-                "buy_price": 215000.0,
-                "buy_volume": "4.65116279",
-                "buy_amount": 1000000,
-                "buy_date": "2026-10-06 11:20:00",
-                "sell_price": 211500.0,
-                "sell_volume": "4.65116279",
-                "sell_amount": 983720,
-                "sell_date": "2026-10-07 08:59:30",
-                "profit_krw": -17272,
-                "profit_pct": -1.73,
-                "status": "COMPLETED",
-            },
-            {
-                "bot_id": "bot_volatility",
-                "market": "KRW-BTC",
-                "buy_order_uuid": "seed-vol-003-buy",
-                "sell_order_uuid": "seed-vol-003-sell",
-                "buy_price": 95800000.0,
-                "buy_volume": "0.01252609",
-                "buy_amount": 1200000,
-                "buy_date": "2026-10-12 10:05:00",
-                "sell_price": 98100000.0,
-                "sell_volume": "0.01252609",
-                "sell_amount": 1228809,
-                "sell_date": "2026-10-13 08:59:00",
-                "profit_krw": 27595,
-                "profit_pct": 2.30,
-                "status": "COMPLETED",
-            },
-            {
-                "bot_id": "bot_dual_momentum",
-                "market": "KRW-ETH",
-                "buy_order_uuid": "seed-mom-001-buy",
-                "sell_order_uuid": "seed-mom-001-sell",
-                "buy_price": 3420000.0,
-                "buy_volume": "0.35087719",
-                "buy_amount": 1200000,
-                "buy_date": "2026-10-04 12:00:00",
-                "sell_price": 3550000.0,
-                "sell_volume": "0.35087719",
-                "sell_amount": 1245614,
-                "sell_date": "2026-10-08 16:00:00",
-                "profit_krw": 44391,
-                "profit_pct": 3.70,
-                "status": "COMPLETED",
-            },
-            {
-                "bot_id": "bot_dual_momentum",
-                "market": "KRW-XRP",
-                "buy_order_uuid": "seed-mom-002-buy",
-                "sell_order_uuid": "seed-mom-002-sell",
-                "buy_price": 780.0,
-                "buy_volume": "1282.05128205",
-                "buy_amount": 1000000,
-                "buy_date": "2026-10-15 09:00:00",
-                "sell_price": 768.0,
-                "sell_volume": "1282.05128205",
-                "sell_amount": 984615,
-                "sell_date": "2026-10-18 13:00:00",
-                "profit_krw": -16377,
-                "profit_pct": -1.64,
-                "status": "COMPLETED",
-            },
-            {
-                "bot_id": "bot_bollinger_reversal",
-                "market": "KRW-DOGE",
-                "buy_order_uuid": "seed-bb-001-buy",
-                "sell_order_uuid": "seed-bb-001-sell",
-                "buy_price": 195.0,
-                "buy_volume": "4102.56410256",
-                "buy_amount": 800000,
-                "buy_date": "2026-10-19 14:30:00",
-                "sell_price": 201.0,
-                "sell_volume": "4102.56410256",
-                "sell_amount": 824615,
-                "sell_date": "2026-10-19 18:45:00",
-                "profit_krw": 23803,
-                "profit_pct": 2.98,
-                "status": "COMPLETED",
-            },
-            {
-                "bot_id": "bot_bollinger_reversal",
-                "market": "KRW-SUI",
-                "buy_order_uuid": "seed-bb-002-buy",
-                "sell_order_uuid": "seed-bb-002-sell",
-                "buy_price": 2800.0,
-                "buy_volume": "250.00000000",
-                "buy_amount": 700000,
-                "buy_date": "2026-10-22 10:15:00",
-                "sell_price": 2800.0,
-                "sell_volume": "250.00000000",
-                "sell_amount": 700000,
-                "sell_date": "2026-10-22 15:00:00",
-                "profit_krw": 0,
-                "profit_pct": 0.0,
-                "status": "COMPLETED",
-            },
-            {
-                "bot_id": "bot_volatility",
-                "market": "KRW-BTC",
-                "buy_order_uuid": "seed-vol-004-buy",
-                "sell_order_uuid": "seed-vol-004-sell",
-                "buy_price": 97200000.0,
-                "buy_volume": "0.01028806",
-                "buy_amount": 1000000,
-                "buy_date": "2026-10-25 09:30:00",
-                "sell_price": 99150000.0,
-                "sell_volume": "0.01028806",
-                "sell_amount": 1020061,
-                "sell_date": "2026-10-26 08:58:00",
-                "profit_krw": 19051,
-                "profit_pct": 1.91,
-                "status": "COMPLETED",
-            },
-            # 미매도(HOLDING) 상태 예시: 매도/매도일/차익 칸이 빈칸으로 표시되며 매도 시 동일 Row가 업데이트됨
-            {
-                "bot_id": "bot_volatility",
-                "market": "KRW-ETH",
-                "buy_order_uuid": "seed-vol-open-005",
-                "sell_order_uuid": None,
-                "buy_price": 3510000.0,
-                "buy_volume": "0.22792022",
-                "buy_amount": 800000,
-                "buy_date": "2026-10-28 09:12:00",
-                "sell_price": None,
-                "sell_volume": None,
-                "sell_amount": None,
-                "sell_date": None,
-                "profit_krw": None,
-                "profit_pct": None,
-                "status": "HOLDING",
+                "min_volume_krw": 0,
+                "stop_loss_pct": 0.0,
+                "take_profit_pct": 0.0,
+                "config_json": "{}",
             },
         ]
 
@@ -466,8 +282,6 @@ class DatabaseManager:
                 )
 
             for b in default_bots:
-                # 미매도 포지션이 있는 bot_volatility는 보유 매수금(800,000원) 차감 반영
-                virtual_krw = b["virtual_krw"] - (800000 if b["bot_id"] == "bot_volatility" else 0)
                 tx.execute(
                     """
                     INSERT INTO bots (
@@ -485,67 +299,16 @@ class DatabaseManager:
                         b["description"],
                         b["allocation_ratio"],
                         b["allocated_capital"],
-                        virtual_krw,
+                        b["virtual_krw"],
                         b["is_running"],
                         b["min_volume_krw"],
                         b["stop_loss_pct"],
                         b["take_profit_pct"],
                         b["config_json"],
-                        "대기 중 (수동 시작 가능)",
+                        "대기 중",
                         now_str,
                     ),
                 )
-
-            for t in sample_trades:
-                cur = tx.execute(
-                    """
-                    INSERT INTO trades (
-                        bot_id, market, buy_order_uuid, sell_order_uuid,
-                        buy_price, buy_volume, buy_amount, buy_date,
-                        sell_price, sell_volume, sell_amount, sell_date,
-                        profit_krw, profit_pct, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        t["bot_id"],
-                        t["market"],
-                        t["buy_order_uuid"],
-                        t["sell_order_uuid"],
-                        t["buy_price"],
-                        t["buy_volume"],
-                        t["buy_amount"],
-                        t["buy_date"],
-                        t["sell_price"],
-                        t["sell_volume"],
-                        t["sell_amount"],
-                        t["sell_date"],
-                        t["profit_krw"],
-                        t["profit_pct"],
-                        t["status"],
-                    ),
-                )
-                trade_id = cur.lastrowid
-                if t["status"] == "HOLDING":
-                    tx.execute(
-                        """
-                        INSERT INTO bot_positions (
-                            bot_id, market, order_uuid, volume,
-                            avg_buy_price, buy_amount, buy_fee, trade_id,
-                            status, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-                        """,
-                        (
-                            t["bot_id"],
-                            t["market"],
-                            t["buy_order_uuid"],
-                            t["buy_volume"],
-                            t["buy_price"],
-                            t["buy_amount"],
-                            400.0,
-                            trade_id,
-                            t["buy_date"],
-                        ),
-                    )
 
     # ------------------------------------------------------------------
     # 시스템 설정 및 잔고 0 이하 전체 중지 로직 (요구사항 21, 22)
@@ -574,6 +337,9 @@ class DatabaseManager:
         모든 봇을 즉시 거래 중지(is_running = 0)시키고 알림 플래그를 활성화합니다.
         """
         conn = self.get_connection()
+        if self.get_setting("capital_configured", "0") != "1":
+            return {"halted": False, "reason": ""}
+
         total_capital = int(float(self.get_setting("total_capital", "0")))
         bots = self.get_bots()
         total_virtual_krw = sum(int(b["virtual_krw"]) for b in bots)
@@ -630,6 +396,10 @@ class DatabaseManager:
             tx.execute(
                 "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('total_capital', ?, ?)",
                 (str(floored_total), now_str),
+            )
+            tx.execute(
+                "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('capital_configured', '1', ?)",
+                (now_str,),
             )
 
             for bot_id, ratio in ratios.items():
@@ -1282,3 +1052,4 @@ class DatabaseManager:
 
 
 db_manager = DatabaseManager()
+

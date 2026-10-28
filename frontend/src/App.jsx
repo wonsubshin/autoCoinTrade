@@ -20,63 +20,12 @@ function formatWithCommas(val) {
 }
 
 function parseNumericInput(val) {
-  if (val === null || val === undefined) return 0;
+  if (val === null || val === undefined) return "";
   const cleaned = String(val).replace(/[^0-9-]/g, "");
-  if (cleaned === "" || cleaned === "-") return 0;
+  if (cleaned === "" || cleaned === "-") return "";
   const num = Number(cleaned);
-  return Number.isNaN(num) ? 0 : Math.floor(num);
+  return Number.isNaN(num) ? "" : Math.floor(num);
 }
-
-const DEFAULT_BOTS = [
-  {
-    bot_id: "bot_volatility",
-    name: "필터 결합형 변동성 돌파 봇",
-    nickname: "변동성돌파 알파봇",
-    strategy_type: "VOLATILITY_BREAKOUT",
-    description: "장중 단타 / 1일 보유 | 전일 변동폭(k) 돌파 + 거래대금 및 추세 필터 결합 (count=8, iloc[-8])",
-    allocation_ratio: 40,
-    allocated_capital: 4000000,
-    virtual_krw: 4000000,
-    is_running: 0,
-    min_volume_krw: 10000000000,
-    stop_loss_pct: 2.5,
-    take_profit_pct: 4.5,
-    config: { k_value: 0.5 },
-    last_status_msg: "대기 중 (수동 시작 가능)",
-  },
-  {
-    bot_id: "bot_dual_momentum",
-    name: "듀얼 모멘텀 스윙 봇",
-    nickname: "듀얼모멘텀 스윙봇",
-    strategy_type: "DUAL_MOMENTUM",
-    description: "상대 모멘텀 + 절대 모멘텀 결합 스윙 | iloc[-8] 대비 수익률 상위 종목 선별 진입",
-    allocation_ratio: 40,
-    allocated_capital: 4000000,
-    virtual_krw: 4000000,
-    is_running: 0,
-    min_volume_krw: 8000000000,
-    stop_loss_pct: 3.5,
-    take_profit_pct: 7.0,
-    config: { abs_momentum_threshold_pct: 1.2 },
-    last_status_msg: "대기 중 (수동 시작 가능)",
-  },
-  {
-    bot_id: "bot_bollinger_reversal",
-    name: "고변동성 볼린저 밴드 역추세 봇",
-    nickname: "볼린저 단기반등봇",
-    strategy_type: "BOLLINGER_REVERSAL",
-    description: "분봉 단기 반등 매매 | 고변동성 코인 볼린저 밴드 하단 이탈 후 반등 진입 (count=8, iloc[-8])",
-    allocation_ratio: 20,
-    allocated_capital: 2000000,
-    virtual_krw: 2000000,
-    is_running: 0,
-    min_volume_krw: 5000000000,
-    stop_loss_pct: 2.0,
-    take_profit_pct: 3.2,
-    config: { bb_std: 2.0 },
-    last_status_msg: "대기 중 (수동 시작 가능)",
-  },
-];
 
 function renderColoredProfit(val) {
   const num = Number(val || 0);
@@ -232,7 +181,7 @@ export default function App() {
   });
 
   // 4) 봇 목록, 거래 내역, 통계, 자금 분배 상태
-  const [bots, setBots] = useState(DEFAULT_BOTS);
+  const [bots, setBots] = useState([]);
   const [selectedBotId, setSelectedBotId] = useState(() => {
     return (
       sessionStorage.getItem("autoCoinTrade_bot") ||
@@ -256,13 +205,9 @@ export default function App() {
     );
   });
 
-  // 5) 설정 화면용 상태
-  const [totalCapitalInput, setTotalCapitalInput] = useState(10000000);
-  const [ratioInputs, setRatioInputs] = useState({
-    bot_volatility: 40,
-    bot_dual_momentum: 40,
-    bot_bollinger_reversal: 20,
-  });
+  // 5) 설정 화면용 상태 (기본값 없음)
+  const [totalCapitalInput, setTotalCapitalInput] = useState("");
+  const [ratioInputs, setRatioInputs] = useState({});
   const [botEditForms, setBotEditForms] = useState({});
   const fileInputRef = useRef(null);
 
@@ -361,22 +306,26 @@ export default function App() {
       if (!resp.ok) return;
       const data = await resp.json();
       setBots(data.bots || []);
-      setTotalCapitalInput(data.total_capital ?? 10000000);
+      setTotalCapitalInput(
+        data.total_capital !== null && data.total_capital !== undefined && data.total_capital !== 0
+          ? data.total_capital
+          : ""
+      );
 
       const newRatios = {};
       const newEditForms = {};
       (data.bots || []).forEach((b) => {
-        newRatios[b.bot_id] = b.allocation_ratio;
+        newRatios[b.bot_id] = b.allocation_ratio ? b.allocation_ratio : "";
         newEditForms[b.bot_id] = {
-          nickname: b.nickname,
-          min_volume_krw: b.min_volume_krw,
-          stop_loss_pct: b.stop_loss_pct,
-          take_profit_pct: b.take_profit_pct,
+          nickname: b.nickname || "",
+          min_volume_krw: b.min_volume_krw ? b.min_volume_krw : "",
+          stop_loss_pct: b.stop_loss_pct ? b.stop_loss_pct : "",
+          take_profit_pct: b.take_profit_pct ? b.take_profit_pct : "",
           config: b.config || {},
         };
       });
       setRatioInputs(newRatios);
-      setBotEditForms((prev) => (Object.keys(prev).length === 0 ? newEditForms : prev));
+      setBotEditForms(newEditForms);
 
       // 요구사항 21: 설정된 잔고가 0 이하로 떨어져 모든 봇이 거래 중지된 경우 거래현황 진입 시 Modal Popup 표시
       if (data.zero_balance_halted && (triggerZeroModalOnTrades || !zeroBalanceAlerted)) {
@@ -794,7 +743,7 @@ export default function App() {
                     className={`status-dot ${bot.is_running ? "green" : "red"}`}
                     style={{ width: "8px", height: "8px" }}
                   />
-                  <span>{bot.nickname}</span>
+                  <span>{bot.nickname || bot.name}</span>
                 </button>
               ))}
             </div>
@@ -805,7 +754,7 @@ export default function App() {
                 <div className="bot-control-panel">
                   <div>
                     <div style={{ fontSize: "18px", fontWeight: 800, marginBottom: "6px" }}>
-                      {currentBot.nickname}{" "}
+                      {currentBot.nickname || currentBot.name}{" "}
                       <span style={{ fontSize: "13px", color: "#94a3b8", fontWeight: 500 }}>
                         ({currentBot.name})
                       </span>
@@ -1103,7 +1052,9 @@ export default function App() {
                     <label>
                       전체 운용 원금 (KRW) — 설정 금액:{" "}
                       <strong style={{ color: "#4ade80" }}>
-                        {formatWithCommas(totalCapitalInput) || "0"}원
+                        {formatWithCommas(totalCapitalInput)
+                          ? `${formatWithCommas(totalCapitalInput)}원`
+                          : "미설정"}
                       </strong>{" "}
                       (0 이하 입력 시 전체 봇 거래 중지)
                     </label>
@@ -1111,20 +1062,22 @@ export default function App() {
                       type="text"
                       inputMode="numeric"
                       className="form-input"
-                      placeholder="예: 10,000,000"
+                      placeholder="운용 원금을 입력하세요"
                       value={formatWithCommas(totalCapitalInput)}
                       onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
                     />
                   </div>
                   {bots.map((b) => {
-                    const ratioVal = Number(ratioInputs[b.bot_id] ?? b.allocation_ratio);
+                    const rawRatio = ratioInputs[b.bot_id];
+                    const ratioVal = Number(rawRatio || 0);
                     const previewAllocated = Math.floor(
-                      Math.floor(parseNumericInput(totalCapitalInput)) * (ratioVal / 100.0)
+                      Math.floor(Number(parseNumericInput(totalCapitalInput) || 0)) *
+                        (ratioVal / 100.0)
                     );
                     return (
                       <div className="form-row" key={b.bot_id}>
                         <label>
-                          [{b.nickname}] 분배 비율 (%) → 배정 원금(버림):{" "}
+                          [{b.nickname || b.name}] 분배 비율 (%) → 배정 원금(버림):{" "}
                           <strong style={{ color: "#a5b4fc" }}>
                             {previewAllocated.toLocaleString("ko-KR")}원
                           </strong>
@@ -1135,11 +1088,12 @@ export default function App() {
                           min="0"
                           max="100"
                           className="form-input"
-                          value={ratioInputs[b.bot_id] ?? b.allocation_ratio}
+                          placeholder="분배 비율(%) 입력"
+                          value={rawRatio ?? ""}
                           onChange={(e) =>
                             setRatioInputs((prev) => ({
                               ...prev,
-                              [b.bot_id]: Number(e.target.value),
+                              [b.bot_id]: e.target.value === "" ? "" : Number(e.target.value),
                             }))
                           }
                         />
@@ -1213,7 +1167,8 @@ export default function App() {
                         <input
                           type="text"
                           className="form-input"
-                          value={form.nickname}
+                          placeholder="봇 별명을 입력하세요"
+                          value={form.nickname ?? ""}
                           onChange={(e) => updateField("nickname", e.target.value)}
                         />
                       </div>
@@ -1222,13 +1177,16 @@ export default function App() {
                         <label>
                           최소 거래대금 유동성 필터 (min_volume_krw):{" "}
                           <strong style={{ color: "#a5b4fc" }}>
-                            {formatWithCommas(form.min_volume_krw) || "0"}원
+                            {formatWithCommas(form.min_volume_krw)
+                              ? `${formatWithCommas(form.min_volume_krw)}원`
+                              : "미설정"}
                           </strong>
                         </label>
                         <input
                           type="text"
                           inputMode="numeric"
                           className="form-input"
+                          placeholder="최소 거래대금 입력"
                           value={formatWithCommas(form.min_volume_krw)}
                           onChange={(e) =>
                             updateField("min_volume_krw", parseNumericInput(e.target.value))
@@ -1243,8 +1201,14 @@ export default function App() {
                             type="number"
                             step="0.1"
                             className="form-input"
-                            value={form.stop_loss_pct}
-                            onChange={(e) => updateField("stop_loss_pct", Number(e.target.value))}
+                            placeholder="손절 %"
+                            value={form.stop_loss_pct ?? ""}
+                            onChange={(e) =>
+                              updateField(
+                                "stop_loss_pct",
+                                e.target.value === "" ? "" : Number(e.target.value)
+                              )
+                            }
                           />
                         </div>
                         <div className="form-row">
@@ -1253,8 +1217,14 @@ export default function App() {
                             type="number"
                             step="0.1"
                             className="form-input"
-                            value={form.take_profit_pct}
-                            onChange={(e) => updateField("take_profit_pct", Number(e.target.value))}
+                            placeholder="익절 %"
+                            value={form.take_profit_pct ?? ""}
+                            onChange={(e) =>
+                              updateField(
+                                "take_profit_pct",
+                                e.target.value === "" ? "" : Number(e.target.value)
+                              )
+                            }
                           />
                         </div>
                       </div>
@@ -1266,8 +1236,14 @@ export default function App() {
                             type="number"
                             step="0.05"
                             className="form-input"
-                            value={form.config?.k_value ?? 0.5}
-                            onChange={(e) => updateConfigField("k_value", Number(e.target.value))}
+                            placeholder="K 계수 입력"
+                            value={form.config?.k_value ?? ""}
+                            onChange={(e) =>
+                              updateConfigField(
+                                "k_value",
+                                e.target.value === "" ? "" : Number(e.target.value)
+                              )
+                            }
                           />
                         </div>
                       )}
@@ -1279,9 +1255,13 @@ export default function App() {
                             type="number"
                             step="0.1"
                             className="form-input"
-                            value={form.config?.abs_momentum_threshold_pct ?? 1.2}
+                            placeholder="최소 수익률(%) 입력"
+                            value={form.config?.abs_momentum_threshold_pct ?? ""}
                             onChange={(e) =>
-                              updateConfigField("abs_momentum_threshold_pct", Number(e.target.value))
+                              updateConfigField(
+                                "abs_momentum_threshold_pct",
+                                e.target.value === "" ? "" : Number(e.target.value)
+                              )
                             }
                           />
                         </div>
@@ -1294,8 +1274,14 @@ export default function App() {
                             type="number"
                             step="0.1"
                             className="form-input"
-                            value={form.config?.bb_std ?? 2.0}
-                            onChange={(e) => updateConfigField("bb_std", Number(e.target.value))}
+                            placeholder="표준편차 배수 입력"
+                            value={form.config?.bb_std ?? ""}
+                            onChange={(e) =>
+                              updateConfigField(
+                                "bb_std",
+                                e.target.value === "" ? "" : Number(e.target.value)
+                              )
+                            }
                           />
                         </div>
                       )}

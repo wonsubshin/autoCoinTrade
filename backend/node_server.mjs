@@ -74,13 +74,13 @@ function initializeDatabase() {
       nickname TEXT NOT NULL,
       strategy_type TEXT NOT NULL,
       description TEXT NOT NULL,
-      allocation_ratio REAL NOT NULL DEFAULT 33.33,
+      allocation_ratio REAL NOT NULL DEFAULT 0,
       allocated_capital INTEGER NOT NULL DEFAULT 0,
       virtual_krw INTEGER NOT NULL DEFAULT 0,
       is_running INTEGER NOT NULL DEFAULT 0,
-      min_volume_krw INTEGER NOT NULL DEFAULT 5000000000,
-      stop_loss_pct REAL NOT NULL DEFAULT 3.0,
-      take_profit_pct REAL NOT NULL DEFAULT 5.0,
+      min_volume_krw INTEGER NOT NULL DEFAULT 0,
+      stop_loss_pct REAL NOT NULL DEFAULT 0,
+      take_profit_pct REAL NOT NULL DEFAULT 0,
       config_json TEXT NOT NULL DEFAULT '{}',
       last_status_msg TEXT NOT NULL DEFAULT '대기 중',
       updated_at TEXT NOT NULL
@@ -119,15 +119,26 @@ function initializeDatabase() {
     );
   `);
 
+  // 기존에 들어가 있던 샘플(seed) 데이터 및 기본값 제거
+  const seedTradeCount = db
+    .prepare("SELECT COUNT(*) AS cnt FROM trades WHERE buy_order_uuid LIKE 'seed-%'")
+    .get();
+  if (seedTradeCount && seedTradeCount.cnt > 0) {
+    db.exec("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%';");
+    db.exec("DELETE FROM trades WHERE buy_order_uuid LIKE 'seed-%';");
+    db.exec("DELETE FROM bots;");
+    db.exec("DELETE FROM system_settings;");
+  }
+
   const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM bots").get();
   if (countRow && countRow.cnt > 0) return;
 
   const now = nowKSTString();
-  const totalCapital = 10000000;
   const setSetting = db.prepare(
     "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)"
   );
-  setSetting.run("total_capital", String(totalCapital), now);
+  setSetting.run("total_capital", "0", now);
+  setSetting.run("capital_configured", "0", now);
   setSetting.run("zero_balance_halted", "0", now);
   setSetting.run("zero_balance_reason", "", now);
   setSetting.run("stats_start_date", "2026-10-01", now);
@@ -145,86 +156,54 @@ function initializeDatabase() {
   insertBot.run(
     "bot_volatility",
     "필터 결합형 변동성 돌파 봇",
-    "변동성돌파 알파봇",
+    "",
     "VOLATILITY_BREAKOUT",
-    "장중 단타 / 1일 보유 | 전일 변동폭(k) 돌파 + 거래대금 및 추세 필터 결합 (count=8, iloc[-8])",
-    40.0,
-    4000000,
-    3200000,
+    "장중 단타 / 1일 보유 | 변동성 돌파 전략",
     0,
-    10000000000,
-    2.5,
-    4.5,
-    JSON.stringify({ k_value: 0.5, candle_count: 8, base_index_offset: -8 }),
-    "대기 중 (수동 시작 가능)",
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    "{}",
+    "대기 중",
     now
   );
   insertBot.run(
     "bot_dual_momentum",
     "듀얼 모멘텀 스윙 봇",
-    "듀얼모멘텀 스윙봇",
+    "",
     "DUAL_MOMENTUM",
-    "상대 모멘텀 + 절대 모멘텀 결합 스윙 | iloc[-8] 대비 수익률 상위 종목 선별 진입",
-    40.0,
-    4000000,
-    4000000,
+    "상대 모멘텀 + 절대 모멘텀 스윙 전략",
     0,
-    8000000000,
-    3.5,
-    7.0,
-    JSON.stringify({ abs_momentum_threshold_pct: 1.2, candle_count: 8, base_index_offset: -8 }),
-    "대기 중 (수동 시작 가능)",
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    "{}",
+    "대기 중",
     now
   );
   insertBot.run(
     "bot_bollinger_reversal",
     "고변동성 볼린저 밴드 역추세 봇",
-    "볼린저 단기반등봇",
+    "",
     "BOLLINGER_REVERSAL",
-    "분봉 단기 반등 매매 | 고변동성 코인 볼린저 밴드 하단 이탈 후 반등 진입 (count=8, iloc[-8])",
-    20.0,
-    2000000,
-    2000000,
+    "고변동성 코인 볼린저 밴드 분봉 단기 반등 전략",
     0,
-    5000000000,
-    2.0,
-    3.2,
-    JSON.stringify({ bb_std: 2.0, rsi_oversold: 32.0, candle_count: 8, base_index_offset: -8 }),
-    "대기 중 (수동 시작 가능)",
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    "{}",
+    "대기 중",
     now
   );
-
-  const insertTrade = db.prepare(`
-    INSERT INTO trades (
-      bot_id, market, buy_order_uuid, sell_order_uuid,
-      buy_price, buy_volume, buy_amount, buy_date,
-      sell_price, sell_volume, sell_amount, sell_date,
-      profit_krw, profit_pct, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const seedTrades = [
-    ["bot_volatility", "KRW-BTC", "seed-vol-001-buy", "seed-vol-001-sell", 94500000, "0.01058201", 1000000, "2026-10-02 09:15:00", 96200000, "0.01058201", 1017989, "2026-10-03 08:59:10", 16980, 1.70, "COMPLETED"],
-    ["bot_volatility", "KRW-SOL", "seed-vol-002-buy", "seed-vol-002-sell", 215000, "4.65116279", 1000000, "2026-10-06 11:20:00", 211500, "4.65116279", 983720, "2026-10-07 08:59:30", -17272, -1.73, "COMPLETED"],
-    ["bot_volatility", "KRW-BTC", "seed-vol-003-buy", "seed-vol-003-sell", 95800000, "0.01252609", 1200000, "2026-10-12 10:05:00", 98100000, "0.01252609", 1228809, "2026-10-13 08:59:00", 27595, 2.30, "COMPLETED"],
-    ["bot_dual_momentum", "KRW-ETH", "seed-mom-001-buy", "seed-mom-001-sell", 3420000, "0.35087719", 1200000, "2026-10-04 12:00:00", 3550000, "0.35087719", 1245614, "2026-10-08 16:00:00", 44391, 3.70, "COMPLETED"],
-    ["bot_dual_momentum", "KRW-XRP", "seed-mom-002-buy", "seed-mom-002-sell", 780, "1282.05128205", 1000000, "2026-10-15 09:00:00", 768, "1282.05128205", 984615, "2026-10-18 13:00:00", -16377, -1.64, "COMPLETED"],
-    ["bot_bollinger_reversal", "KRW-DOGE", "seed-bb-001-buy", "seed-bb-001-sell", 195, "4102.56410256", 800000, "2026-10-19 14:30:00", 201, "4102.56410256", 824615, "2026-10-19 18:45:00", 23803, 2.98, "COMPLETED"],
-    ["bot_bollinger_reversal", "KRW-SUI", "seed-bb-002-buy", "seed-bb-002-sell", 2800, "250.00000000", 700000, "2026-10-22 10:15:00", 2800, "250.00000000", 700000, "2026-10-22 15:00:00", 0, 0.0, "COMPLETED"],
-    ["bot_volatility", "KRW-BTC", "seed-vol-004-buy", "seed-vol-004-sell", 97200000, "0.01028806", 1000000, "2026-10-25 09:30:00", 99150000, "0.01028806", 1020061, "2026-10-26 08:58:00", 19051, 1.91, "COMPLETED"],
-    ["bot_volatility", "KRW-ETH", "seed-vol-open-005", null, 3510000, "0.22792022", 800000, "2026-10-28 09:12:00", null, null, null, null, null, null, "HOLDING"],
-  ];
-
-  for (const t of seedTrades) {
-    const res = insertTrade.run(...t);
-    if (t[14] === "HOLDING") {
-      db.prepare(`
-        INSERT INTO bot_positions (
-          bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-      `).run(t[0], t[1], t[2], t[5], t[4], t[6], 400, res.lastInsertRowid, t[7]);
-    }
-  }
 }
 
 initializeDatabase();
@@ -252,6 +231,10 @@ function getBots() {
 
 function checkAndHaltIfZeroBalance() {
   const db = getDb();
+  const configured = getSetting("capital_configured", "0") === "1";
+  if (!configured) {
+    return { halted: false, reason: "" };
+  }
   const totalCapital = Math.floor(Number(getSetting("total_capital", "0")));
   const bots = getBots();
   const totalVirtual = bots.reduce((acc, b) => acc + Number(b.virtual_krw || 0), 0);
@@ -406,7 +389,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/system/overview" && req.method === "GET") {
       const haltInfo = checkAndHaltIfZeroBalance();
       return sendJson(res, 200, {
-        total_capital: Math.floor(Number(getSetting("total_capital", "10000000"))),
+        total_capital: Math.floor(Number(getSetting("total_capital", "0"))),
         zero_balance_halted: haltInfo.halted,
         zero_balance_reason: haltInfo.reason,
         stats_start_date: getSetting("stats_start_date", "2026-10-01"),
@@ -671,6 +654,9 @@ const server = http.createServer(async (req, res) => {
       const now = nowKSTString();
       db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('total_capital', ?, ?)").run(
         String(flooredTotal),
+        now
+      );
+      db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('capital_configured', '1', ?)").run(
         now
       );
 
