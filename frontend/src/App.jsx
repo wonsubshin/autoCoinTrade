@@ -1255,163 +1255,166 @@ export default function App() {
               </div>
             </div>
 
-            {/* 요구사항 22: 봇별 자금 분배 비율 설정 (소수점 버림 처리) */}
-            <div className="card">
-              <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>
-                1. 운용 원금 및 봇별 자금 분배 비율 설정 (소수점 이하 버림 적용)
-              </h3>
-              <form onSubmit={handleSaveAllocation}>
-                <div className="settings-grid">
-                  {/* 실제 업비트에서 가져온 실 계좌 잔고 및 총 보유 자산 (수정 불가 / 읽기 전용 영역) */}
-                  <div
-                    className="form-row"
+            {/* 상단: 실제 업비트에서 가져온 실 계좌 잔고 및 총 보유 자산 (수정 불가 / 읽기 전용 영역) */}
+            <div
+              className="card"
+              style={{
+                background: "#0f172a",
+                border: "1px solid #334155",
+                marginBottom: "20px",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "12px",
+                  flexWrap: "wrap",
+                  gap: "8px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <h3 style={{ fontSize: "16px", fontWeight: 700, margin: 0, color: "#f8fafc" }}>
+                    🔒 업비트 실 계좌 잔고 및 총 보유 자산 (KRW)
+                  </h3>
+                  <span
                     style={{
-                      background: "#0f172a",
-                      border: "1px solid #334155",
-                      borderRadius: "10px",
-                      padding: "14px",
-                      marginBottom: "6px",
+                      fontSize: "11px",
+                      background: "#1e293b",
+                      color: "#94a3b8",
+                      border: "1px solid #475569",
+                      borderRadius: "4px",
+                      padding: "2px 6px",
                     }}
                   >
-                    <div
+                    읽기 전용 · 수정 불가
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "5px 12px", fontSize: "12px" }}
+                  onClick={fetchUpbitAccount}
+                  disabled={upbitAccount.loading}
+                >
+                  {upbitAccount.loading ? "조회 중..." : "실계좌/총자산 새로고침"}
+                </button>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "14px" }}>
+                <div>
+                  <div style={{ fontSize: "12.5px", color: "#94a3b8", marginBottom: "6px", fontWeight: 600 }}>
+                    실 계좌 잔고 (주문 가능 KRW)
+                  </div>
+                  <input
+                    type="text"
+                    readOnly
+                    disabled
+                    className="form-input"
+                    style={{
+                      width: "100%",
+                      background: "#1e293b",
+                      color: upbitAccount.success ? "#38bdf8" : "#f87171",
+                      fontWeight: 700,
+                      cursor: "not-allowed",
+                      opacity: 1,
+                      WebkitTextFillColor: upbitAccount.success ? "#38bdf8" : "#f87171",
+                    }}
+                    value={
+                      upbitAccount.loading
+                        ? "조회 중..."
+                        : upbitAccount.success && upbitAccount.krw_balance !== null
+                        ? `${Number(upbitAccount.krw_balance).toLocaleString("ko-KR")}원 (주문중: ${Number(
+                            upbitAccount.krw_locked ?? 0
+                          ).toLocaleString("ko-KR")}원)`
+                        : upbitAccount.message || "조회 실패"
+                    }
+                  />
+                </div>
+
+                <div>
+                  <div style={{ fontSize: "12.5px", color: "#94a3b8", marginBottom: "6px", fontWeight: 600 }}>
+                    총 보유 자산 (실계좌 원화 + 코인 평가금액 / 운용 원금 한도)
+                  </div>
+                  <input
+                    type="text"
+                    readOnly
+                    disabled
+                    className="form-input"
+                    style={{
+                      width: "100%",
+                      background: "#1e293b",
+                      color: upbitAccount.success ? "#4ade80" : "#f87171",
+                      fontWeight: 700,
+                      cursor: "not-allowed",
+                      opacity: 1,
+                      WebkitTextFillColor: upbitAccount.success ? "#4ade80" : "#f87171",
+                    }}
+                    value={
+                      upbitAccount.loading
+                        ? "조회 중..."
+                        : upbitAccount.success && upbitAccount.total_asset_krw !== null
+                        ? `${Number(upbitAccount.total_asset_krw).toLocaleString("ko-KR")}원 (코인평가: ${Number(
+                            upbitAccount.total_eval_krw ?? 0
+                          ).toLocaleString("ko-KR")}원)`
+                        : upbitAccount.message || "조회 실패"
+                    }
+                  />
+                </div>
+              </div>
+
+              {upbitAccount.checked_at && (
+                <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "8px" }}>
+                  최근 조회 시각: {upbitAccount.checked_at} | {upbitAccount.message}
+                </div>
+              )}
+            </div>
+
+            {/* 하단 1: 요구사항 22 - 전체 운용 원금 및 봇별 자금 분배 비율 설정 (소수점 버림 처리) */}
+            <div className="card">
+              <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>
+                1. 전체 운용 원금 및 봇별 자금 분배 비율 설정 (소수점 이하 버림 적용)
+              </h3>
+              <form onSubmit={handleSaveAllocation}>
+                <div className="form-row" style={{ marginBottom: "18px" }}>
+                  <label>
+                    전체 운용 원금 (KRW) — 설정 금액:{" "}
+                    <strong
                       style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        marginBottom: "10px",
-                        flexWrap: "wrap",
-                        gap: "8px",
+                        color:
+                          upbitAccount.success &&
+                          upbitAccount.total_asset_krw !== null &&
+                          parseNumericInput(totalCapitalInput) > Number(upbitAccount.total_asset_krw)
+                            ? "#ef4444"
+                            : "#4ade80",
                       }}
                     >
-                      <label style={{ margin: 0, display: "flex", alignItems: "center", gap: "6px" }}>
-                        <span>🔒 업비트 실 계좌 잔고 및 총 보유 자산 (KRW)</span>
-                        <span
-                          style={{
-                            fontSize: "11px",
-                            background: "#1e293b",
-                            color: "#94a3b8",
-                            border: "1px solid #475569",
-                            borderRadius: "4px",
-                            padding: "2px 6px",
-                          }}
-                        >
-                          읽기 전용 · 수정 불가
-                        </span>
-                      </label>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        style={{ padding: "4px 10px", fontSize: "12px" }}
-                        onClick={fetchUpbitAccount}
-                        disabled={upbitAccount.loading}
-                      >
-                        {upbitAccount.loading ? "조회 중..." : "실계좌/총자산 새로고침"}
-                      </button>
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                      <div>
-                        <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "4px", fontWeight: 600 }}>
-                          실 계좌 잔고 (주문 가능 KRW)
-                        </div>
-                        <input
-                          type="text"
-                          readOnly
-                          disabled
-                          className="form-input"
-                          style={{
-                            background: "#1e293b",
-                            color: upbitAccount.success ? "#38bdf8" : "#f87171",
-                            fontWeight: 700,
-                            cursor: "not-allowed",
-                            opacity: 1,
-                            WebkitTextFillColor: upbitAccount.success ? "#38bdf8" : "#f87171",
-                          }}
-                          value={
-                            upbitAccount.loading
-                              ? "조회 중..."
-                              : upbitAccount.success && upbitAccount.krw_balance !== null
-                              ? `${Number(upbitAccount.krw_balance).toLocaleString("ko-KR")}원 (주문중: ${Number(
-                                  upbitAccount.krw_locked ?? 0
-                                ).toLocaleString("ko-KR")}원)`
-                              : upbitAccount.message || "조회 실패"
-                          }
-                        />
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "4px", fontWeight: 600 }}>
-                          총 보유 자산 (실계좌 원화 + 코인 평가금액 / 운용 원금 한도)
-                        </div>
-                        <input
-                          type="text"
-                          readOnly
-                          disabled
-                          className="form-input"
-                          style={{
-                            background: "#1e293b",
-                            color: upbitAccount.success ? "#4ade80" : "#f87171",
-                            fontWeight: 700,
-                            cursor: "not-allowed",
-                            opacity: 1,
-                            WebkitTextFillColor: upbitAccount.success ? "#4ade80" : "#f87171",
-                          }}
-                          value={
-                            upbitAccount.loading
-                              ? "조회 중..."
-                              : upbitAccount.success && upbitAccount.total_asset_krw !== null
-                              ? `${Number(upbitAccount.total_asset_krw).toLocaleString("ko-KR")}원 (코인평가: ${Number(
-                                  upbitAccount.total_eval_krw ?? 0
-                                ).toLocaleString("ko-KR")}원)`
-                              : upbitAccount.message || "조회 실패"
-                          }
-                        />
-                      </div>
-                    </div>
-
-                    {upbitAccount.checked_at && (
-                      <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "6px" }}>
-                        최근 조회 시각: {upbitAccount.checked_at} | {upbitAccount.message}
+                      {formatWithCommas(totalCapitalInput)
+                        ? `${formatWithCommas(totalCapitalInput)}원`
+                        : "미설정"}
+                    </strong>{" "}
+                    (총 보유 자산 한도 이하만 저장 가능 / 0 이하 입력 시 전체 봇 거래 중지)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="form-input"
+                    placeholder="운용 원금을 입력하세요 (총 보유 자산 한도 이하)"
+                    value={formatWithCommas(totalCapitalInput)}
+                    onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
+                  />
+                  {upbitAccount.success &&
+                    upbitAccount.total_asset_krw !== null &&
+                    parseNumericInput(totalCapitalInput) > Number(upbitAccount.total_asset_krw) && (
+                      <div style={{ fontSize: "12px", color: "#f87171", marginTop: "4px", fontWeight: 600 }}>
+                        ⚠️ 입력한 금액이 업비트 총 보유 자산 한도(
+                        {Number(upbitAccount.total_asset_krw).toLocaleString("ko-KR")}원)를 초과하여 저장할 수 없습니다.
                       </div>
                     )}
-                  </div>
+                </div>
 
-                  <div className="form-row">
-                    <label>
-                      전체 운용 원금 (KRW) — 설정 금액:{" "}
-                      <strong
-                        style={{
-                          color:
-                            upbitAccount.success &&
-                            upbitAccount.total_asset_krw !== null &&
-                            parseNumericInput(totalCapitalInput) > Number(upbitAccount.total_asset_krw)
-                              ? "#ef4444"
-                              : "#4ade80",
-                        }}
-                      >
-                        {formatWithCommas(totalCapitalInput)
-                          ? `${formatWithCommas(totalCapitalInput)}원`
-                          : "미설정"}
-                      </strong>{" "}
-                      (총 보유 자산 한도 이하만 저장 가능 / 0 이하 입력 시 전체 봇 거래 중지)
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      className="form-input"
-                      placeholder="운용 원금을 입력하세요 (총 보유 자산 한도 이하)"
-                      value={formatWithCommas(totalCapitalInput)}
-                      onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
-                    />
-                    {upbitAccount.success &&
-                      upbitAccount.total_asset_krw !== null &&
-                      parseNumericInput(totalCapitalInput) > Number(upbitAccount.total_asset_krw) && (
-                        <div style={{ fontSize: "12px", color: "#f87171", marginTop: "4px", fontWeight: 600 }}>
-                          ⚠️ 입력한 금액이 업비트 총 보유 자산 한도(
-                          {Number(upbitAccount.total_asset_krw).toLocaleString("ko-KR")}원)를 초과하여 저장할 수 없습니다.
-                        </div>
-                      )}
-                  </div>
+                <div className="settings-grid">
                   {bots.map((b) => {
                     const rawRatio = ratioInputs[b.bot_id];
                     const ratioVal = Number(rawRatio || 0);
