@@ -442,6 +442,17 @@ export default function App() {
     }
   };
 
+  const refreshBotsStatusOnly = async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/bots`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (Array.isArray(data.bots)) {
+        setBots(data.bots);
+      }
+    } catch {}
+  };
+
   useEffect(() => {
     if (!authenticated) return;
     fetchUpbitStatus();
@@ -453,6 +464,7 @@ export default function App() {
     const timer = setInterval(() => {
       fetchUpbitStatus();
       fetchUpbitAccount();
+      refreshBotsStatusOnly();
       fetchTrades(selectedBotId);
     }, 6000);
     return () => clearInterval(timer);

@@ -119,9 +119,9 @@ function initializeDatabase() {
     );
   `);
 
-  // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-*) 이력 제거
-  db.exec("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%' OR order_uuid LIKE 'order-bid-%';");
-  db.exec("DELETE FROM trades WHERE buy_order_uuid LIKE 'seed-%' OR buy_order_uuid LIKE 'order-bid-%';");
+  // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-* / auto-bid-*) 가상 이력 제거
+  db.exec("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%' OR order_uuid LIKE 'order-bid-%' OR order_uuid LIKE 'auto-bid-%';");
+  db.exec("DELETE FROM trades WHERE buy_order_uuid LIKE 'seed-%' OR buy_order_uuid LIKE 'order-bid-%' OR buy_order_uuid LIKE 'auto-bid-%';");
   // 테스트 이력 제거 후 각 봇의 virtual_krw를 (allocated_capital - 실제 OPEN 포지션 투자금액)으로 동기화
   const allBotsForSync = db.prepare("SELECT bot_id, allocated_capital FROM bots").all();
   for (const b of allBotsForSync) {
@@ -319,14 +319,18 @@ function checkAndHaltIfZeroBalance() {
   };
 }
 
-function createUpbitJwt(accessKey, secretKey) {
+function createUpbitJwt(accessKey, secretKey, queryParams = null) {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const payload = Buffer.from(
-    JSON.stringify({
-      access_key: accessKey,
-      nonce: crypto.randomUUID(),
-    })
-  ).toString("base64url");
+  const payloadObj = {
+    access_key: accessKey,
+    nonce: crypto.randomUUID(),
+  };
+  if (queryParams && Object.keys(queryParams).length > 0) {
+    const qs = new URLSearchParams(queryParams).toString();
+    payloadObj.query_hash = crypto.createHash("sha512").update(qs, "utf-8").digest("hex");
+    payloadObj.query_hash_alg = "SHA512";
+  }
+  const payload = Buffer.from(JSON.stringify(payloadObj)).toString("base64url");
   const signature = crypto
     .createHmac("sha256", secretKey)
     .update(`${header}.${payload}`)
@@ -1063,4 +1067,468 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`AutoCoinTrade SQLite Backend listening on http://localhost:${PORT}`);
 });
+
+// ============================================================================
+// 백그라운드 3종 전략 봇 자동매매 스케줄러 워커 (8초 주기)
+// ============================================================================
+let isStrategyCycleRunning = false;
+
+async function fetchUpbitTickersMap(markets) {
+  const map = new Map();
+  if (!markets || markets.length === 0) return map;
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const resp = await fetch(
+      `https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(markets.join(","))}`
+    );
+    if (resp.status === 200) {
+      const data = await resp.json();
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          map.set(item.market, item);
+        }
+      }
+    }
+  } catch {}
+  return map;
+}
+
+async function fetchUpbitCandlesSorted(market, unit = "days", count = 8) {
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const resp = await fetch(
+      `https://api.upbit.com/v1/candles/${unit}?market=${encodeURIComponent(market)}&count=${Math.max(count, 8)}`
+    );
+    if (resp.status === 200) {
+      const rows = await resp.json();
+      if (Array.isArray(rows) && rows.length >= 8) {
+        return rows.slice().reverse(); // 과거 -> 최신 오름차순 (index 0이 iloc[-8] 기준 시점)
+      }
+    }
+  } catch {}
+  return [];
+}
+
+function computeRsi(closes, period = 7) {
+  if (!Array.isArray(closes) || closes.length < 2) return 50.0;
+  let gainSum = 0;
+  let lossSum = 0;
+  const startIdx = Math.max(1, closes.length - period);
+  let cnt = 0;
+  for (let i = startIdx; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) gainSum += diff;
+    else lossSum += -diff;
+    cnt++;
+  }
+  if (cnt === 0 || lossSum === 0) return lossSum === 0 ? 100.0 : 50.0;
+  const rs = (gainSum / cnt) / (lossSum / cnt);
+  return 100.0 - 100.0 / (1.0 + rs);
+}
+
+function getSafeOrderKrw(bot, ratio = 0.35) {
+  const virtualKrw = Math.floor(Number(bot.virtual_krw || 0));
+  if (virtualKrw < 5000) return 0;
+  const cfgOrderKrw = Number(bot.config?.order_krw || 0);
+  let rawBudget = cfgOrderKrw >= 5000 ? Math.min(cfgOrderKrw, virtualKrw) : Math.floor(virtualKrw * ratio);
+  let safeKrw = Math.floor(rawBudget / 1.0005);
+  if (safeKrw < 5000) {
+    const maxAffordable = Math.floor(virtualKrw / 1.0005);
+    safeKrw = maxAffordable >= 5000 ? 5000 : 0;
+  }
+  return safeKrw;
+}
+
+async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
+  const db = getDb();
+  const latestBot = getBots().find((b) => b.bot_id === bot.bot_id);
+  if (!latestBot || Number(latestBot.virtual_krw || 0) < orderKrw) return false;
+
+  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  } catch {}
+  const isLive =
+    String(cfg.trade_mode || "").toLowerCase() === "live" &&
+    cfg.access_key &&
+    cfg.secret_key &&
+    cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY";
+
+  if (!isLive) {
+    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+      `${market} 매수 신호 포착 (주문예정 ${orderKrw.toLocaleString("ko-KR")}원 / 현재 모의모드 'paper' 설정으로 실주문 대기 중)`,
+      nowKSTString(),
+      bot.bot_id
+    );
+    return false;
+  }
+
+  let orderUuid = "";
+  let execPrice = Number(currentPrice);
+  let execVolume = (orderKrw / execPrice).toFixed(8);
+  let fee = Math.floor(orderKrw * 0.0005);
+
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const params = {
+      market,
+      side: "bid",
+      price: String(Math.floor(orderKrw)),
+      ord_type: "price",
+    };
+    const token = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), params);
+    const resp = await fetch("https://api.upbit.com/v1/orders", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(params),
+    });
+    if (resp.status !== 200 && resp.status !== 201) {
+      const errData = await resp.json().catch(() => ({}));
+      const errMsg = errData?.error?.message || `HTTP ${resp.status}`;
+      db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+        `${market} 매수 주문 실패: ${errMsg}`,
+        nowKSTString(),
+        bot.bot_id
+      );
+      return false;
+    }
+    const orderData = await resp.json();
+    orderUuid = orderData?.uuid || `upbit-bid-${crypto.randomUUID().slice(0, 8)}`;
+  } catch (err) {
+    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+      `${market} 매수 API 통신 오류: ${err.message}`,
+      nowKSTString(),
+      bot.bot_id
+    );
+    return false;
+  }
+
+  const now = nowKSTString();
+  const newVirtual = Math.max(0, Math.floor(Number(latestBot.virtual_krw) - orderKrw - fee));
+  db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+    newVirtual,
+    `${market} 자동 매수 체결 (${orderKrw.toLocaleString("ko-KR")}원)`,
+    now,
+    bot.bot_id
+  );
+  const trRes = db
+    .prepare(`
+      INSERT INTO trades (
+        bot_id, market, buy_order_uuid, sell_order_uuid,
+        buy_price, buy_volume, buy_amount, buy_date,
+        sell_price, sell_volume, sell_amount, sell_date,
+        profit_krw, profit_pct, status
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, 'HOLDING')
+    `)
+    .run(bot.bot_id, market, orderUuid, execPrice, execVolume, orderKrw, now);
+
+  db.prepare(`
+    INSERT INTO bot_positions (
+      bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+  `).run(bot.bot_id, market, orderUuid, execVolume, execPrice, orderKrw, fee, trRes.lastInsertRowid, now);
+  return true;
+}
+
+async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
+  const db = getDb();
+  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  } catch {}
+  const isLive =
+    String(cfg.trade_mode || "").toLowerCase() === "live" &&
+    cfg.access_key &&
+    cfg.secret_key &&
+    cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY";
+
+  let sellUuid = `auto-ask-${crypto.randomUUID().slice(0, 8)}`;
+  if (isLive) {
+    try {
+      await new Promise((r) => setTimeout(r, 120));
+      const params = {
+        market: pos.market,
+        side: "ask",
+        volume: String(pos.volume),
+        ord_type: "market",
+      };
+      const token = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), params);
+      const resp = await fetch("https://api.upbit.com/v1/orders", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(params),
+      });
+      if (resp.status !== 200 && resp.status !== 201) {
+        return false;
+      }
+      const orderData = await resp.json();
+      if (orderData?.uuid) sellUuid = orderData.uuid;
+    } catch {
+      return false;
+    }
+  }
+
+  const now = nowKSTString();
+  const sellAmount = Math.floor(Number(pos.volume) * Number(sellPrice));
+  const sellFee = Math.floor(sellAmount * 0.0005);
+  const netProceeds = sellAmount - sellFee;
+  const profitKrw = Math.floor(netProceeds - Number(pos.buy_amount) - Number(pos.buy_fee || 0));
+  const profitPct = Number(((profitKrw / Number(pos.buy_amount)) * 100).toFixed(2));
+
+  db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ? AND bot_id = ?").run(
+    now,
+    pos.id,
+    bot.bot_id
+  );
+  db.prepare(`
+    UPDATE trades
+    SET sell_order_uuid = ?, sell_price = ?, sell_volume = ?, sell_amount = ?, sell_date = ?, profit_krw = ?, profit_pct = ?, status = 'COMPLETED'
+    WHERE id = ? AND bot_id = ?
+  `).run(sellUuid, sellPrice, pos.volume, sellAmount, now, profitKrw, profitPct, pos.trade_id, bot.bot_id);
+
+  const latestBot = getBots().find((b) => b.bot_id === bot.bot_id);
+  const newVirtual = Math.floor(Number(latestBot?.virtual_krw || 0) + netProceeds);
+  db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+    newVirtual,
+    `${pos.market} ${reasonLabel} 매도 완료 (${profitKrw >= 0 ? "+" : ""}${profitKrw.toLocaleString("ko-KR")}원)`,
+    now,
+    bot.bot_id
+  );
+  checkAndHaltIfZeroBalance();
+  return true;
+}
+
+async function runBotStrategiesCycle() {
+  if (isStrategyCycleRunning) return;
+  isStrategyCycleRunning = true;
+  try {
+    const haltInfo = checkAndHaltIfZeroBalance();
+    if (haltInfo.halted) return;
+
+    const db = getDb();
+    const runningBots = getBots().filter((b) => Number(b.is_running) === 1 && Number(b.allocated_capital) > 0);
+    if (runningBots.length === 0) return;
+
+    const allMarkets = [
+      "KRW-BTC",
+      "KRW-ETH",
+      "KRW-SOL",
+      "KRW-XRP",
+      "KRW-DOGE",
+      "KRW-SUI",
+      "KRW-AVAX",
+      "KRW-SHIB",
+    ];
+    const tickerMap = await fetchUpbitTickersMap(allMarkets);
+    if (tickerMap.size === 0) return;
+
+    for (const bot of runningBots) {
+      const now = nowKSTString();
+      const todayStr = todayDateString();
+      const stopLossPct = -Math.abs(Number(bot.stop_loss_pct || 2.5));
+      const takeProfitPct = Math.abs(Number(bot.take_profit_pct || 4.5));
+      const minVol = Number(bot.min_volume_krw || 0);
+
+      // 1) 공통 손절/익절 및 1일 만기 청산 체크
+      for (const pos of bot.open_positions || []) {
+        const tk = tickerMap.get(pos.market);
+        if (!tk) continue;
+        const curPrice = Number(tk.trade_price);
+        const avgBuy = Number(pos.avg_buy_price);
+        const pnlPct = ((curPrice - avgBuy) / avgBuy) * 100.0;
+
+        if (pnlPct <= stopLossPct) {
+          await executeBotSellOrder(bot, pos, curPrice, `손절(${pnlPct.toFixed(2)}%)`);
+          continue;
+        }
+        if (pnlPct >= takeProfitPct) {
+          await executeBotSellOrder(bot, pos, curPrice, `익절(+${pnlPct.toFixed(2)}%)`);
+          continue;
+        }
+        if (bot.bot_id === "bot_volatility" && String(pos.created_at || "").slice(0, 10) < todayStr) {
+          await executeBotSellOrder(bot, pos, curPrice, "1일 보유 만기");
+          continue;
+        }
+      }
+
+      const refreshedBot = getBots().find((b) => b.bot_id === bot.bot_id);
+      if (!refreshedBot || Number(refreshedBot.is_running) !== 1) continue;
+      const heldSet = new Set((refreshedBot.open_positions || []).map((p) => p.market));
+
+      // 2) 봇별 전략 평가
+      if (bot.bot_id === "bot_volatility") {
+        const candidates = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-DOGE"].filter((m) => {
+          const tk = tickerMap.get(m);
+          return tk && Number(tk.acc_trade_price_24h || 0) >= minVol;
+        });
+        const kVal = Number(refreshedBot.config?.k_value || 0.4);
+        let summaryText = "";
+
+        for (const mkt of candidates) {
+          if (heldSet.has(mkt)) continue;
+          const candles = await fetchUpbitCandlesSorted(mkt, "days", 8);
+          if (candles.length < 8) continue;
+          const baseClose = Number(candles[0].trade_price); // iloc[-8]
+          const prevCandle = candles[candles.length - 2];
+          const currCandle = candles[candles.length - 1];
+          const targetPrice =
+            Number(currCandle.opening_price) +
+            (Number(prevCandle.high_price) - Number(prevCandle.low_price)) * kVal;
+          const curPrice = Number(currCandle.trade_price);
+
+          if (!summaryText) {
+            summaryText = `${mkt} 현재가 ${curPrice.toLocaleString("ko-KR")} / 돌파목표 ${Math.floor(targetPrice).toLocaleString("ko-KR")} (K=${kVal})`;
+          }
+
+          if (curPrice > baseClose && curPrice >= targetPrice && heldSet.size < 2) {
+            const orderKrw = getSafeOrderKrw(refreshedBot, Number(refreshedBot.config?.order_ratio || 0.3));
+            if (orderKrw >= 5000) {
+              await executeBotBuyOrder(refreshedBot, mkt, orderKrw, curPrice);
+              summaryText = `${mkt} 변동성 돌파 매수 체결 (${orderKrw.toLocaleString("ko-KR")}원)`;
+              break;
+            }
+          }
+        }
+        db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+          summaryText ? `실시간 감시 중: ${summaryText}` : `변동성 돌파(K=${kVal}) 대상 탐색 중`,
+          now,
+          bot.bot_id
+        );
+      } else if (bot.bot_id === "bot_dual_momentum") {
+        const candidates = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-SUI", "KRW-AVAX"].filter((m) => {
+          const tk = tickerMap.get(m);
+          return tk && Number(tk.acc_trade_price_24h || 0) >= minVol;
+        });
+        const absThreshold = Number(refreshedBot.config?.abs_momentum_threshold_pct || 1.5);
+        const scores = [];
+
+        for (const mkt of candidates) {
+          const candles = await fetchUpbitCandlesSorted(mkt, "minutes/240", 8);
+          if (candles.length < 8) continue;
+          const basePrice = Number(candles[0].trade_price); // iloc[-8]
+          const curPrice = Number(candles[candles.length - 1].trade_price);
+          if (basePrice <= 0) continue;
+          const momPct = ((curPrice - basePrice) / basePrice) * 100.0;
+          scores.push({ market: mkt, momPct, curPrice });
+        }
+        scores.sort((a, b) => b.momPct - a.momPct);
+
+        // 보유 종목 모멘텀 음수 전환 시 매도
+        for (const pos of refreshedBot.open_positions || []) {
+          const sc = scores.find((s) => s.market === pos.market);
+          if (sc && sc.momPct < 0) {
+            await executeBotSellOrder(refreshedBot, pos, sc.curPrice, "모멘텀 이탈");
+          }
+        }
+
+        let signalHandled = false;
+        if (heldSet.size < 2 && scores.length > 0) {
+          for (const cand of scores) {
+            if (heldSet.has(cand.market)) continue;
+            if (cand.momPct >= absThreshold) {
+              const orderKrw = getSafeOrderKrw(refreshedBot, Number(refreshedBot.config?.order_ratio || 0.35));
+              if (orderKrw >= 5000) {
+                signalHandled = true;
+                const ok = await executeBotBuyOrder(refreshedBot, cand.market, orderKrw, cand.curPrice);
+                if (ok) {
+                  db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+                    `${cand.market} 듀얼 모멘텀(+${cand.momPct.toFixed(2)}%) 매수 체결 (${orderKrw.toLocaleString("ko-KR")}원)`,
+                    now,
+                    bot.bot_id
+                  );
+                }
+                break;
+              }
+            }
+          }
+        }
+
+        if (!signalHandled) {
+          const topText =
+            scores.length > 0
+              ? `1위 ${scores[0].market}(${scores[0].momPct >= 0 ? "+" : ""}${scores[0].momPct.toFixed(2)}% / 진입기준 +${absThreshold}%)`
+              : "유동성 필터 통과 종목 대기";
+          db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+            `실시간 감시 중: ${topText}`,
+            now,
+            bot.bot_id
+          );
+        }
+      } else if (bot.bot_id === "bot_bollinger_reversal") {
+        const candidates = ["KRW-SOL", "KRW-DOGE", "KRW-XRP", "KRW-SUI", "KRW-SHIB"].filter((m) => {
+          const tk = tickerMap.get(m);
+          return tk && Number(tk.acc_trade_price_24h || 0) >= minVol;
+        });
+        const bbStd = Number(refreshedBot.config?.bb_std || 2.0);
+        const bbPeriod = Math.max(Number(refreshedBot.config?.bb_period || 20), 8);
+        let summaryText = "";
+
+        for (const mkt of candidates) {
+          const candles = await fetchUpbitCandlesSorted(mkt, "minutes/15", bbPeriod);
+          if (candles.length < 8) continue;
+          const closes = candles.map((c) => Number(c.trade_price));
+          const mean = closes.reduce((a, b) => a + b, 0) / closes.length;
+          const variance = closes.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / closes.length;
+          const std = Math.sqrt(variance);
+          const lowerBand = mean - bbStd * std;
+          const curr = candles[candles.length - 1];
+          const curClose = Number(curr.trade_price);
+          const curLow = Number(curr.low_price);
+          const curOpen = Number(curr.opening_price);
+          const baseClose = Number(candles[candles.length - 8].trade_price); // iloc[-8]
+          const rsi = computeRsi(closes, 14);
+
+          // 보유 포지션 중심선 반등 시 익절
+          const heldPos = (refreshedBot.open_positions || []).find((p) => p.market === mkt);
+          if (heldPos && curClose >= mean && curClose > Number(heldPos.avg_buy_price) * 1.004) {
+            await executeBotSellOrder(refreshedBot, heldPos, curClose, "볼린저 중심선 회복");
+            continue;
+          }
+
+          if (!summaryText) {
+            summaryText = `${mkt} 현재가 ${curClose.toLocaleString("ko-KR")} / 하단밴드 ${Math.floor(lowerBand).toLocaleString("ko-KR")} (RSI ${rsi.toFixed(1)})`;
+          }
+
+          if (!heldSet.has(mkt) && heldSet.size < 2) {
+            const touchedLower = curLow <= lowerBand && curClose >= curOpen && rsi <= 40.0;
+            const oversold = rsi <= 30.0 && curClose < baseClose;
+            if (touchedLower || oversold) {
+              const orderKrw = getSafeOrderKrw(refreshedBot, 0.45);
+              if (orderKrw >= 5000) {
+                const ok = await executeBotBuyOrder(refreshedBot, mkt, orderKrw, curClose);
+                if (ok) {
+                  summaryText = `${mkt} 볼린저 하단/과매도(RSI ${rsi.toFixed(1)}) 반등 매수 체결`;
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+          summaryText ? `실시간 감시 중: ${summaryText}` : `볼린저 밴드(${bbStd}σ) 반등 탐색 중`,
+          now,
+          bot.bot_id
+        );
+      }
+    }
+  } catch (err) {
+    console.error("Strategy cycle error:", err.message);
+  } finally {
+    isStrategyCycleRunning = false;
+  }
+}
+
+setTimeout(runBotStrategiesCycle, 1500);
+setInterval(runBotStrategiesCycle, 10000);
 
