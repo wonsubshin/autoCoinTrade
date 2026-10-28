@@ -538,41 +538,6 @@ export default function App() {
       return;
     }
 
-    const applyLocalAllocationFallback = () => {
-      const halted = numericCapital <= 0;
-      const updatedBots = bots.map((b) => {
-        const ratio = Number(ratioInputs[b.bot_id] ?? b.allocation_ratio ?? 0);
-        const allocated = halted ? 0 : Math.floor(numericCapital * (ratio / 100.0));
-        return {
-          ...b,
-          allocation_ratio: ratio,
-          allocated_capital: allocated,
-          virtual_krw: allocated,
-          is_running: halted ? 0 : b.is_running,
-          last_status_msg: halted
-            ? "잔고 0 이하 도달로 긴급 자동 중지됨"
-            : b.last_status_msg,
-        };
-      });
-      setBots(updatedBots);
-      setTotalCapitalInput(numericCapital);
-      setZeroBalanceAlerted(false);
-
-      if (halted) {
-        showModal(
-          "잔고 0원 이하 도달 - 전체 봇 자동 거래 중지",
-          `설정된 운용 원금(${numericCapital.toLocaleString("ko-KR")}원)이 0원 이하이므로 모든 봇이 자동 거래 중지되었습니다.`,
-          "danger"
-        );
-      } else {
-        showModal(
-          "자금 분배 비율 설정 완료",
-          `자금 분배 비율 및 원금 설정이 저장되었습니다 (소수점 이하 버림 적용).\n총 운용 원금: ${numericCapital.toLocaleString("ko-KR")}원`,
-          "success"
-        );
-      }
-    };
-
     try {
       const resp = await fetch(`${API_BASE}/api/settings/allocation`, {
         method: "PUT",
@@ -583,17 +548,12 @@ export default function App() {
         }),
       });
       const data = await resp.json().catch(() => null);
-      if (!resp.ok) {
-        if (data && data.detail) {
-          showModal("자금 분배 설정 오류", data.detail, "danger");
-          return;
-        }
-        // 백엔드 미기동(프록시 오류) 시 프론트엔드 상태에 즉시 반영
-        applyLocalAllocationFallback();
-        return;
-      }
-      if (!data) {
-        applyLocalAllocationFallback();
+      if (!resp.ok || !data || !data.success) {
+        const errMsg =
+          data?.detail ||
+          data?.message ||
+          `운용 원금 설정 저장 중 서버 오류가 발생했습니다 (HTTP ${resp.status}).`;
+        showModal("운용 원금 및 자금 분배 저장 오류", errMsg, "danger");
         return;
       }
       setZeroBalanceAlerted(false);
@@ -605,8 +565,12 @@ export default function App() {
           : `${data.message}\n총 운용 원금: ${numericCapital.toLocaleString("ko-KR")}원`,
         data.zero_balance_halted ? "danger" : "success"
       );
-    } catch {
-      applyLocalAllocationFallback();
+    } catch (err) {
+      showModal(
+        "운용 원금 및 자금 분배 저장 오류",
+        `백엔드 서버(${API_BASE})와 통신할 수 없어 운용 원금 설정이 저장되지 않았습니다.\n사유: ${err.message}`,
+        "danger"
+      );
     }
   };
 
