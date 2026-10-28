@@ -99,7 +99,7 @@ cd ..
 ```powershell
 .\start.bat
 ```
-- 백엔드 서버(`http://127.0.0.1:8000`)와 프론트엔드 개발 서버(`http://localhost:5173`)가 각각의 콘솔 창으로 실행됩니다.
+- 백엔드 서버(`http://127.0.0.1:8000`)와 프론트엔드 개발 서버(`http://localhost:9000`)가 각각의 콘솔 창으로 실행됩니다.
 
 ### 방법 B: 터미널에서 수동으로 각각 실행
 1. **터미널 1 (Backend 실행)**:
@@ -111,14 +111,14 @@ cd ..
    cd frontend
    npm run dev
    ```
-3. 웹 브라우저에서 **`http://localhost:5173`** 으로 접속합니다.
+3. 웹 브라우저에서 **`http://localhost:9000`** 으로 접속합니다.
 
 ---
 
 ## 5. 프로그램 종료 방법 (How to Stop)
 
 ### 방법 A: 원클릭 종료 스크립트 실행 (`stop.bat` 권장)
-탐색기에서 `stop.bat`을 더블클릭하거나 터미널에서 실행하면 백엔드(`8000` 포트)와 프론트엔드(`5173` 포트) 프로세스를 모두 찾아 안전하게 종료합니다.
+탐색기에서 `stop.bat`을 더블클릭하거나 터미널에서 실행하면 백엔드(`8000` 포트)와 프론트엔드(`9000` 포트) 프로세스를 모두 찾아 안전하게 종료합니다.
 ```powershell
 .\stop.bat
 ```
@@ -132,7 +132,7 @@ cd ..
 ## 6. 웹 화면 사용 가이드
 
 ### 6.1 입장 코드 입력 화면
-- 웹 브라우저에서 `http://localhost:5173` 접속 시 입장 코드 입력 화면이 나타납니다.
+- 웹 브라우저에서 `http://localhost:9000` 접속 시 입장 코드 입력 화면이 나타납니다.
 - 입장 코드: **`sws@2129`**
 - 코드가 일치하면 좌측 메뉴(`20%`)와 우측 상세 화면(`80%`)으로 구성된 다크 테마 메인 화면으로 진입합니다.
 
@@ -186,3 +186,4 @@ cd ..
 > 1. 매도 시 절대 `get_balance()`로 코인 전량을 조회하여 매도하지 마세요. 반드시 `self.sell_position_isolated(position_id)`를 호출하여 `bot_positions` 테이블에 본인 `bot_id`로 기록된 `volume`만 분할 매도해야 합니다.
 > 2. 매수 시 반드시 `self.buy_market_with_lock(market, order_krw)`를 호출하여 사전 `virtual_krw` 예산 체크 및 트랜잭션 락을 통과하도록 유지하세요.
 > 3. 캔들 조회 시 `self.fetch_indexed_candles(market, unit, count=8)` 및 `self.get_base_reference_candle(df)`(`df.iloc[-8]`) 규칙과 `self.sleep_rate_limit()`(`time.sleep(0.12)`)을 유지하세요.
+
