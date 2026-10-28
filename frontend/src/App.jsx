@@ -990,7 +990,15 @@ export default function App() {
                     <button
                       className="btn btn-start"
                       onClick={() => handleBotStartStop(currentBot.bot_id, true)}
-                      disabled={Boolean(currentBot.is_running)}
+                      disabled={
+                        Boolean(currentBot.is_running) ||
+                        Number(currentBot.allocated_capital || 0) <= 0
+                      }
+                      title={
+                        Number(currentBot.allocated_capital || 0) <= 0
+                          ? "할당 원금이 0원이므로 거래를 시작할 수 없습니다. 설정 메뉴에서 자금 분배 비율을 설정해주세요."
+                          : ""
+                      }
                     >
                       ▶ 거래시작
                     </button>

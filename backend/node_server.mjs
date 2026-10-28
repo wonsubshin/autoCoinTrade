@@ -616,11 +616,19 @@ const server = http.createServer(async (req, res) => {
       const botId = startStopMatch[1];
       const isStart = startStopMatch[2] === "start";
       if (isStart) {
+        const targetBot = getBots().find((b) => b.bot_id === botId);
+        if (!targetBot || Number(targetBot.allocated_capital || 0) <= 0) {
+          return sendJson(res, 200, {
+            success: false,
+            bot: targetBot,
+            message: `[${targetBot?.nickname || targetBot?.name || botId}] 할당 원금이 0원이므로 거래를 시작할 수 없습니다. 설정에서 원금 및 자금 분배 비율을 먼저 설정해주세요.`,
+          });
+        }
         const haltInfo = checkAndHaltIfZeroBalance();
         if (haltInfo.halted) {
           return sendJson(res, 200, {
             success: false,
-            bot: getBots().find((b) => b.bot_id === botId),
+            bot: targetBot,
             message: haltInfo.reason,
           });
         }

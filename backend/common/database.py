@@ -512,6 +512,12 @@ class DatabaseManager:
             bot = self.get_bot(bot_id)
             if not bot:
                 return {"success": False, "bot": None, "message": "존재하지 않는 봇입니다."}
+            if int(bot.get("allocated_capital") or 0) <= 0:
+                return {
+                    "success": False,
+                    "bot": bot,
+                    "message": f"[{bot['nickname'] or bot['name']}] 할당 원금이 0원이므로 거래를 시작할 수 없습니다. 설정에서 원금 및 자금 분배 비율을 먼저 설정해주세요.",
+                }
             if int(bot["virtual_krw"]) <= 0 and len(bot.get("open_positions", [])) == 0:
                 return {
                     "success": False,
