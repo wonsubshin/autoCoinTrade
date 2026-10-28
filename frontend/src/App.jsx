@@ -1024,16 +1024,9 @@ export default function App() {
                     <button
                       className="btn btn-outline"
                       onClick={() => handleManualTradeTest(currentBot.bot_id, "buy")}
-                      title="거래 이력을 남기지 않고 해당 봇의 할당 원금/가용 잔고 기준 매수 가능 여부를 테스트합니다"
+                      title="실제 주문이나 거래 이력을 남기지 않고 해당 봇의 가용 잔고 기준 매수 가능 여부만 확인합니다"
                     >
-                      + 매수 테스트
-                    </button>
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => handleManualTradeTest(currentBot.bot_id, "sell")}
-                      title="bot_positions에 기록된 본인 bot_id의 volume만 지정하여 분할 매도 후 Row를 업데이트합니다"
-                    >
-                      ✓ 보유지분 매도 업데이트
+                      + 매수 테스트 (단순 확인)
                     </button>
                   </div>
                 </div>

@@ -110,18 +110,14 @@ class BotOrchestrator:
         if action == "sell":
             open_positions = bot_state.get("open_positions", [])
             if not open_positions:
-                return {"success": False, "message": f"[{bot_state['nickname']}] 현재 보유 중인 미매도 포지션이 없습니다."}
+                return {"success": False, "message": f"[{bot_state['nickname'] or bot_state['name']}] 현재 보유 중인 미매도 포지션이 없습니다."}
             target_pos = open_positions[0]
-            res = bot.sell_position_isolated(position_id=int(target_pos["id"]))
-            if not res.get("success"):
-                return {"success": False, "message": res.get("reason", "매도 실패")}
             return {
                 "success": True,
                 "message": (
-                    f"[{bot_state['nickname']}] {res['market']} 본인 지분({res['volume']}) 분할 매도 완료 "
-                    f"(차익: {res['profit_krw']:+,}원 / {res['profit_pct']:+.2f}%)"
+                    f"[{bot_state['nickname'] or bot_state['name']}] 보유 포지션({target_pos['market']}, 수량 {target_pos['volume']}) 확인 완료 "
+                    f"(실제 매도가 아니므로 매도 완료로 기록하지 않습니다)"
                 ),
-                "result": res,
             }
 
         return {"success": False, "message": f"지원하지 않는 액션입니다: {action}"}

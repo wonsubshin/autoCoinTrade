@@ -122,7 +122,27 @@ function initializeDatabase() {
   // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-* / auto-bid-*) 가상 이력 제거
   db.exec("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%' OR order_uuid LIKE 'order-bid-%' OR order_uuid LIKE 'auto-bid-%';");
   db.exec("DELETE FROM trades WHERE buy_order_uuid LIKE 'seed-%' OR buy_order_uuid LIKE 'order-bid-%' OR buy_order_uuid LIKE 'auto-bid-%';");
-  // 테스트 이력 제거 후 각 봇의 virtual_krw를 (allocated_capital - 실제 OPEN 포지션 투자금액)으로 동기화
+
+  // 실제 매도되지 않고 테스트 버튼(order-ask-*)으로 잘못 매도 완료 처리된 내역을 미매도(HOLDING / OPEN) 상태로 복구
+  db.exec(`
+    UPDATE bot_positions
+    SET status = 'OPEN', closed_at = NULL
+    WHERE trade_id IN (SELECT id FROM trades WHERE sell_order_uuid LIKE 'order-ask-%');
+  `);
+  db.exec(`
+    UPDATE trades
+    SET sell_order_uuid = NULL,
+        sell_price = NULL,
+        sell_volume = NULL,
+        sell_amount = NULL,
+        sell_date = NULL,
+        profit_krw = NULL,
+        profit_pct = NULL,
+        status = 'HOLDING'
+    WHERE sell_order_uuid LIKE 'order-ask-%';
+  `);
+
+  // 테스트 이력 정리 및 복구 후 각 봇의 virtual_krw를 (allocated_capital - 실제 OPEN 포지션 투자금액)으로 동기화
   const allBotsForSync = db.prepare("SELECT bot_id, allocated_capital FROM bots").all();
   for (const b of allBotsForSync) {
     const inv = db
@@ -719,64 +739,37 @@ const server = http.createServer(async (req, res) => {
       if (action === "buy") {
         const haltInfo = checkAndHaltIfZeroBalance();
         if (haltInfo.halted) return sendJson(res, 200, { success: false, message: haltInfo.reason });
-        const availableKrw = Math.max(Number(bot.virtual_krw || 0), Number(bot.allocated_capital || 0));
+        const availableKrw = Number(bot.virtual_krw || 0);
         if (availableKrw < 5000) {
           return sendJson(res, 200, {
             success: false,
-            message: `[${bot.nickname || bot.name}] 최소 주문 금액(5,000원) 이상의 가용 잔고(현재 ${availableKrw.toLocaleString("ko-KR")}원)가 부족합니다.`,
+            message: `[${bot.nickname || bot.name}] 최소 주문 금액(5,000원) 이상의 가용 가상잔고(현재 ${availableKrw.toLocaleString("ko-KR")}원)가 부족합니다.`,
           });
         }
         let orderKrw = Math.min(Math.floor(availableKrw * 0.25), 500000);
         if (orderKrw < 5000) {
-          const maxAffordable = Math.floor(availableKrw / 1.0005);
-          orderKrw = maxAffordable >= 5000 ? 5000 : 5000;
+          orderKrw = 5000;
         }
         const price = 98500000;
         const volume = (orderKrw / price).toFixed(8);
 
-        // 매수 테스트는 거래 내역(trades/bot_positions) 이력을 남기거나 잔고를 차감하지 않음
+        // 매수 테스트는 실주문을 전송하거나 거래 내역(trades/bot_positions) 이력을 남기지 않음
         return sendJson(res, 200, {
           success: true,
-          message: `[${bot.nickname || bot.name}] ${market} 매수 테스트 완료 (테스트 주문 가능 금액: ${orderKrw.toLocaleString("ko-KR")}원, 예상 수량: ${volume} / 테스트 이력은 저장되지 않습니다)`,
+          message: `[${bot.nickname || bot.name}] 매수 테스트 정상 확인 (가용 잔고: ${availableKrw.toLocaleString("ko-KR")}원 / 1회 주문 가능 금액: ${orderKrw.toLocaleString("ko-KR")}원 / 실매수 및 이력 저장은 수행하지 않습니다)`,
         });
       } else {
         const pos = bot.open_positions?.[0];
         if (!pos) {
           return sendJson(res, 200, {
             success: false,
-            message: `[${bot.nickname}] 현재 보유 중인 미매도 포지션이 없습니다.`,
+            message: `[${bot.nickname || bot.name}] 현재 보유 중인 미매도 포지션이 없습니다.`,
           });
         }
-        const sellPrice = Math.floor(Number(pos.avg_buy_price) * 1.018);
-        const sellAmount = Math.floor(Number(pos.volume) * sellPrice);
-        const sellFee = Math.floor(sellAmount * 0.0005);
-        const netProceeds = sellAmount - sellFee;
-        const profitKrw = Math.floor(netProceeds - Number(pos.buy_amount) - Number(pos.buy_fee));
-        const profitPct = Number(((profitKrw / Number(pos.buy_amount)) * 100).toFixed(2));
-        const sellUuid = `order-ask-${crypto.randomUUID().slice(0, 8)}`;
-
-        db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ? AND bot_id = ?").run(
-          now,
-          pos.id,
-          botId
-        );
-        db.prepare(`
-          UPDATE trades
-          SET sell_order_uuid = ?, sell_price = ?, sell_volume = ?, sell_amount = ?, sell_date = ?, profit_krw = ?, profit_pct = ?, status = 'COMPLETED'
-          WHERE id = ? AND bot_id = ?
-        `).run(sellUuid, sellPrice, pos.volume, sellAmount, now, profitKrw, profitPct, pos.trade_id, botId);
-
-        const newVirtual = Math.floor(Number(bot.virtual_krw) + netProceeds);
-        db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-          newVirtual,
-          `${pos.market} 매도 완료 (차익 ${profitKrw.toLocaleString()}원)`,
-          now,
-          botId
-        );
-
+        // 매도 테스트 역시 DB 상태를 변경하거나 가짜 매도 기록을 남기지 않음
         return sendJson(res, 200, {
           success: true,
-          message: `[${bot.nickname}] ${pos.market} 본인 지분(${pos.volume}) 분할 매도 완료 (차익: ${profitKrw.toLocaleString()}원 / ${profitPct}%)`,
+          message: `[${bot.nickname || bot.name}] 보유 포지션(${pos.market}, 수량 ${pos.volume}) 확인 완료 (실제 매도가 아니므로 매도 완료로 기록하지 않습니다)`,
         });
       }
     }
@@ -1144,6 +1137,15 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
   const latestBot = getBots().find((b) => b.bot_id === bot.bot_id);
   if (!latestBot || Number(latestBot.virtual_krw || 0) < orderKrw) return false;
 
+  // 현재 OPEN 포지션 투자 합계가 할당 원금(allocated_capital)을 초과하지 않도록 엄격 검증
+  const invRow = db
+    .prepare("SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'")
+    .get(bot.bot_id);
+  const currentInvested = Number(invRow?.invested || 0);
+  if (currentInvested + orderKrw > Number(latestBot.allocated_capital || 0)) {
+    return false;
+  }
+
   const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
   let cfg = {};
   try {
@@ -1284,34 +1286,37 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
     cfg.secret_key &&
     cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY";
 
-  let sellUuid = `auto-ask-${crypto.randomUUID().slice(0, 8)}`;
-  if (isLive) {
-    try {
-      await new Promise((r) => setTimeout(r, 120));
-      const params = {
-        market: pos.market,
-        side: "ask",
-        volume: String(pos.volume),
-        ord_type: "market",
-      };
-      const token = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), params);
-      const resp = await fetch("https://api.upbit.com/v1/orders", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify(params),
-      });
-      if (resp.status !== 200 && resp.status !== 201) {
-        return false;
-      }
-      const orderData = await resp.json();
-      if (orderData?.uuid) sellUuid = orderData.uuid;
-    } catch {
+  if (!isLive) {
+    return false;
+  }
+
+  let sellUuid = "";
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const params = {
+      market: pos.market,
+      side: "ask",
+      volume: String(pos.volume),
+      ord_type: "market",
+    };
+    const token = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), params);
+    const resp = await fetch("https://api.upbit.com/v1/orders", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(params),
+    });
+    if (resp.status !== 200 && resp.status !== 201) {
       return false;
     }
+    const orderData = await resp.json();
+    if (!orderData?.uuid) return false;
+    sellUuid = orderData.uuid;
+  } catch {
+    return false;
   }
 
   const now = nowKSTString();
