@@ -242,15 +242,16 @@ def update_capital_allocation(payload: AllocationUpdateRequest):
 
     floored_total = math.floor(float(payload.total_capital or 0))
     account_info = upbit_client.get_krw_account_balance()
-    if not account_info.get("success") or account_info.get("krw_balance") is None:
+    max_asset_limit = int(account_info.get("total_asset_krw") or account_info.get("krw_balance") or 0)
+    if not account_info.get("success") or account_info.get("total_asset_krw") is None:
         raise HTTPException(
             status_code=400,
-            detail=f"업비트 실계좌 잔고를 조회할 수 없어 전체 운용 원금을 저장할 수 없습니다. ({account_info.get('message', '실계좌 조회 실패')})",
+            detail=f"업비트 총 보유 자산을 조회할 수 없어 전체 운용 원금을 저장할 수 없습니다. ({account_info.get('message', '실계좌 조회 실패')})",
         )
-    if floored_total > int(account_info["krw_balance"]):
+    if floored_total > max_asset_limit:
         raise HTTPException(
             status_code=400,
-            detail=f"설정하려는 전체 운용 원금({floored_total:,}원)이 실제 업비트 계좌 잔고({int(account_info['krw_balance']):,}원)보다 높아서 저장할 수 없습니다.",
+            detail=f"설정하려는 전체 운용 원금({floored_total:,}원)이 업비트 총 보유 자산({max_asset_limit:,}원)의 한도를 초과하여 저장할 수 없습니다.",
         )
 
     bots = db_manager.update_capital_allocations(

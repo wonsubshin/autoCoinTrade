@@ -492,6 +492,7 @@ async function fetchUpbitAccountBalance() {
 
       const totalBuyKrw = Math.floor(totalBuySum);
       const totalEvalKrw = Math.floor(totalEvalSum);
+      const totalAssetKrw = Math.floor(total + totalEvalSum);
       const evalProfitKrw = totalEvalKrw - totalBuyKrw;
       const evalProfitPct =
         totalBuyKrw > 0 ? Number(((evalProfitKrw / totalBuyKrw) * 100).toFixed(2)) : 0;
@@ -502,6 +503,7 @@ async function fetchUpbitAccountBalance() {
         orderable_krw: available,
         total_buy_krw: totalBuyKrw,
         total_eval_krw: totalEvalKrw,
+        total_asset_krw: totalAssetKrw,
         eval_profit_krw: evalProfitKrw,
         eval_profit_pct: evalProfitPct,
         krw_locked: locked,
@@ -518,6 +520,7 @@ async function fetchUpbitAccountBalance() {
         orderable_krw: null,
         total_buy_krw: null,
         total_eval_krw: null,
+        total_asset_krw: null,
         eval_profit_krw: null,
         eval_profit_pct: null,
         krw_locked: null,
@@ -533,6 +536,7 @@ async function fetchUpbitAccountBalance() {
       orderable_krw: null,
       total_buy_krw: null,
       total_eval_krw: null,
+      total_asset_krw: null,
       eval_profit_krw: null,
       eval_profit_pct: null,
       krw_locked: null,
@@ -896,16 +900,17 @@ const server = http.createServer(async (req, res) => {
       }
       const flooredTotal = Math.floor(Number(body.total_capital || 0));
       const accountInfo = await fetchUpbitAccountBalance();
-      if (!accountInfo.success || accountInfo.krw_balance === null) {
+      const maxAssetLimit = Number(accountInfo.total_asset_krw ?? accountInfo.krw_balance ?? 0);
+      if (!accountInfo.success || accountInfo.total_asset_krw === null) {
         return sendJson(res, 400, {
           success: false,
-          detail: `업비트 실계좌 잔고를 조회할 수 없어 전체 운용 원금을 저장할 수 없습니다. (${accountInfo.message || "실계좌 조회 실패"})`,
+          detail: `업비트 총 보유 자산을 조회할 수 없어 전체 운용 원금을 저장할 수 없습니다. (${accountInfo.message || "실계좌 조회 실패"})`,
         });
       }
-      if (flooredTotal > Number(accountInfo.krw_balance)) {
+      if (flooredTotal > maxAssetLimit) {
         return sendJson(res, 400, {
           success: false,
-          detail: `설정하려는 전체 운용 원금(${flooredTotal.toLocaleString("ko-KR")}원)이 실제 업비트 계좌 잔고(${Number(accountInfo.krw_balance).toLocaleString("ko-KR")}원)보다 높아서 저장할 수 없습니다.`,
+          detail: `설정하려는 전체 운용 원금(${flooredTotal.toLocaleString("ko-KR")}원)이 업비트 총 보유 자산(${maxAssetLimit.toLocaleString("ko-KR")}원)의 한도를 초과하여 저장할 수 없습니다.`,
         });
       }
       const now = nowKSTString();

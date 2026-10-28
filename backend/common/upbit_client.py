@@ -295,6 +295,7 @@ class UpbitOpenAPIClient:
 
                 total_buy_krw = math.floor(total_buy_sum)
                 total_eval_krw = math.floor(total_eval_sum)
+                total_asset_krw = math.floor(total + total_eval_sum)
                 eval_profit_krw = total_eval_krw - total_buy_krw
                 eval_profit_pct = (
                     round((eval_profit_krw / total_buy_krw) * 100.0, 2) if total_buy_krw > 0 else 0.0
@@ -306,6 +307,7 @@ class UpbitOpenAPIClient:
                     "orderable_krw": available,
                     "total_buy_krw": total_buy_krw,
                     "total_eval_krw": total_eval_krw,
+                    "total_asset_krw": total_asset_krw,
                     "eval_profit_krw": eval_profit_krw,
                     "eval_profit_pct": eval_profit_pct,
                     "krw_locked": locked,
