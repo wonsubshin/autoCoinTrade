@@ -1280,6 +1280,14 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
 
 async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
   const db = getDb();
+  // 이미 이전 루프(동일 코인 통합 매도 등)에서 CLOSED 처리된 포지션이면 스킵
+  const currentPos = db
+    .prepare("SELECT * FROM bot_positions WHERE id = ? AND bot_id = ? AND status = 'OPEN'")
+    .get(pos.id, bot.bot_id);
+  if (!currentPos) {
+    return false;
+  }
+
   const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
   let cfg = {};
   try {
@@ -1295,13 +1303,74 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
     return false;
   }
 
+  // 동일 봇·동일 마켓의 OPEN 포지션 조회
+  // 개별 포지션이 최소주문금액(5,000원) 부근(<= 5,500원)이거나 동일 마켓 복수 분할 포지션이 있을 때
+  // 손절 시 5,000원 미달 거부 및 소수점 잔량 불일치 방지를 위해 동일 마켓 OPEN 포지션을 통합 매도
+  const sameMarketOpenPositions = db
+    .prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND market = ? AND status = 'OPEN' ORDER BY id ASC")
+    .all(bot.bot_id, currentPos.market);
+
+  const singleEvalKrw = Number(currentPos.volume || 0) * Number(sellPrice || 0);
+  const targetPositions =
+    sameMarketOpenPositions.length > 1 && (singleEvalKrw < 5500 || sameMarketOpenPositions.length >= 2)
+      ? sameMarketOpenPositions
+      : [currentPos];
+
+  const dbSumVolume = targetPositions.reduce((acc, p) => acc + Number(p.volume || 0), 0);
+  if (dbSumVolume <= 0) {
+    return false;
+  }
+
+  // 업비트 실계좌 보유 수량 조회 (소수점 8자리 미세 오차로 인한 insufficient_funds_ask 방지)
+  const currency = String(currentPos.market || "").split("-")[1] || "";
+  let sellVolumeStr = dbSumVolume.toFixed(8);
+
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const acctToken = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim());
+    const acctResp = await fetch("https://api.upbit.com/v1/accounts", {
+      headers: {
+        Authorization: `Bearer ${acctToken}`,
+        Accept: "application/json",
+      },
+    });
+    if (acctResp.status === 200) {
+      const accounts = await acctResp.json();
+      const coinAcct = Array.isArray(accounts)
+        ? accounts.find((a) => String(a.currency || "").toUpperCase() === currency.toUpperCase())
+        : null;
+      const actualCoinBalance = Number(coinAcct?.balance || 0);
+      if (actualCoinBalance > 0) {
+        const otherBotsRow = db
+          .prepare(
+            "SELECT COALESCE(SUM(volume), 0) AS other_vol FROM bot_positions WHERE bot_id != ? AND market = ? AND status = 'OPEN'"
+          )
+          .get(bot.bot_id, currentPos.market);
+        const otherBotsVol = Number(otherBotsRow?.other_vol || 0);
+
+        if (otherBotsVol <= 0 && targetPositions.length === sameMarketOpenPositions.length) {
+          // 다른 봇이 보유하지 않은 코인이고 현재 봇의 해당 코인 전량 청산이면 업비트 실보유 수량 전체를 매도
+          sellVolumeStr = String(coinAcct.balance);
+        } else {
+          const safeVol = Math.min(dbSumVolume, Math.max(0, actualCoinBalance - otherBotsVol));
+          if (safeVol > 0) {
+            sellVolumeStr = safeVol.toFixed(8);
+          }
+        }
+      }
+    }
+  } catch {}
+
   let sellUuid = "";
+  let actualTotalFunds = Math.floor(Number(sellVolumeStr) * Number(sellPrice));
+  let actualTotalFee = Math.floor(actualTotalFunds * 0.0005);
+
   try {
     await new Promise((r) => setTimeout(r, 120));
     const params = {
-      market: pos.market,
+      market: currentPos.market,
       side: "ask",
-      volume: String(pos.volume),
+      volume: sellVolumeStr,
       ord_type: "market",
     };
     const token = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), params);
@@ -1315,38 +1384,100 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
       body: JSON.stringify(params),
     });
     if (resp.status !== 200 && resp.status !== 201) {
+      const errData = await resp.json().catch(() => ({}));
+      const errMsg = errData?.error?.message || `HTTP ${resp.status}`;
+      db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+        `${currentPos.market} 매도 주문 실패: ${errMsg}`,
+        nowKSTString(),
+        bot.bot_id
+      );
       return false;
     }
     const orderData = await resp.json();
     if (!orderData?.uuid) return false;
     sellUuid = orderData.uuid;
-  } catch {
+
+    // 매도 주문 체결 상세 조회 (GET /v1/order?uuid=...)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await new Promise((r) => setTimeout(r, 400));
+      try {
+        const qParams = { uuid: sellUuid };
+        const qToken = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), qParams);
+        const oResp = await fetch(`https://api.upbit.com/v1/order?uuid=${encodeURIComponent(sellUuid)}`, {
+          headers: {
+            Authorization: `Bearer ${qToken}`,
+            Accept: "application/json",
+          },
+        });
+        if (oResp.status === 200) {
+          const oDetail = await oResp.json();
+          const tradesArr = Array.isArray(oDetail.trades) ? oDetail.trades : [];
+          const fundsSum = tradesArr.reduce((acc, t) => acc + Number(t.funds || 0), 0);
+          if (fundsSum > 0) {
+            actualTotalFunds = Math.floor(fundsSum);
+            if (oDetail.paid_fee !== undefined) {
+              actualTotalFee = Math.ceil(Number(oDetail.paid_fee || actualTotalFee));
+            }
+            break;
+          }
+        }
+      } catch {}
+    }
+  } catch (err) {
+    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+      `${currentPos.market} 매도 통신 오류: ${err.message}`,
+      nowKSTString(),
+      bot.bot_id
+    );
     return false;
   }
 
   const now = nowKSTString();
-  const sellAmount = Math.floor(Number(pos.volume) * Number(sellPrice));
-  const sellFee = Math.floor(sellAmount * 0.0005);
-  const netProceeds = sellAmount - sellFee;
-  const profitKrw = Math.floor(netProceeds - Number(pos.buy_amount) - Number(pos.buy_fee || 0));
-  const profitPct = Number(((profitKrw / Number(pos.buy_amount)) * 100).toFixed(2));
+  const totalBuyAmount = targetPositions.reduce((acc, p) => acc + Number(p.buy_amount || 0), 0) || 1;
+  let totalProfitKrw = 0;
 
-  db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ? AND bot_id = ?").run(
-    now,
-    pos.id,
-    bot.bot_id
-  );
-  db.prepare(`
-    UPDATE trades
-    SET sell_order_uuid = ?, sell_price = ?, sell_volume = ?, sell_amount = ?, sell_date = ?, profit_krw = ?, profit_pct = ?, status = 'COMPLETED'
-    WHERE id = ? AND bot_id = ?
-  `).run(sellUuid, sellPrice, pos.volume, sellAmount, now, profitKrw, profitPct, pos.trade_id, bot.bot_id);
+  for (const p of targetPositions) {
+    const weight = Number(p.buy_amount || 0) / totalBuyAmount;
+    const posSellAmount = Math.floor(actualTotalFunds * weight);
+    const posSellFee = Math.floor(actualTotalFee * weight);
+    const posNetProceeds = posSellAmount - posSellFee;
+    const posProfitKrw = Math.floor(posNetProceeds - Number(p.buy_amount) - Number(p.buy_fee || 0));
+    const posProfitPct = Number(((posProfitKrw / Number(p.buy_amount)) * 100).toFixed(2));
+    totalProfitKrw += posProfitKrw;
 
+    db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ? AND bot_id = ?").run(
+      now,
+      p.id,
+      bot.bot_id
+    );
+    db.prepare(`
+      UPDATE trades
+      SET sell_order_uuid = ?, sell_price = ?, sell_volume = ?, sell_amount = ?, sell_date = ?, profit_krw = ?, profit_pct = ?, status = 'COMPLETED'
+      WHERE id = ? AND bot_id = ?
+    `).run(sellUuid, sellPrice, p.volume, posSellAmount, now, posProfitKrw, posProfitPct, p.trade_id, bot.bot_id);
+  }
+
+  // 매도 후 가용 잔고(virtual_krw) 정합성 보정:
+  // 초과 매수분이 청산되더라도 virtual_krw가 (할당 원금 + 누적 실현손익 - 잔여 OPEN 투자금)을 초과하지 않도록 자동 정상화
   const latestBot = getBots().find((b) => b.bot_id === bot.bot_id);
-  const newVirtual = Math.floor(Number(latestBot?.virtual_krw || 0) + netProceeds);
+  const allocatedCap = Math.floor(Number(latestBot?.allocated_capital || 0));
+  const openInvRow = db
+    .prepare(
+      "SELECT COALESCE(SUM(buy_amount + COALESCE(buy_fee, 0)), 0) AS open_inv FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'"
+    )
+    .get(bot.bot_id);
+  const pnlRow = db
+    .prepare("SELECT COALESCE(SUM(profit_krw), 0) AS total_pnl FROM trades WHERE bot_id = ? AND status = 'COMPLETED'")
+    .get(bot.bot_id);
+  const openInv = Number(openInvRow?.open_inv || 0);
+  const totalPnl = Number(pnlRow?.total_pnl || 0);
+  const newVirtual = Math.max(0, Math.floor(allocatedCap + totalPnl - openInv));
+
   db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
     newVirtual,
-    `${pos.market} ${reasonLabel} 매도 완료 (${profitKrw >= 0 ? "+" : ""}${profitKrw.toLocaleString("ko-KR")}원)`,
+    `${currentPos.market} ${reasonLabel} 매도 완료 (${targetPositions.length}건 통합 / ${
+      totalProfitKrw >= 0 ? "+" : ""
+    }${totalProfitKrw.toLocaleString("ko-KR")}원)`,
     now,
     bot.bot_id
   );
@@ -1575,6 +1706,64 @@ async function runBotStrategiesCycle() {
   }
 }
 
-setTimeout(runBotStrategiesCycle, 1500);
+async function reconcileOpenPositionsWithUpbit() {
+  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  } catch {}
+  if (!cfg.access_key || !cfg.secret_key || cfg.access_key === "YOUR_UPBIT_ACCESS_KEY") {
+    return;
+  }
+
+  const db = getDb();
+  const openPositions = db
+    .prepare("SELECT * FROM bot_positions WHERE status = 'OPEN' ORDER BY id ASC")
+    .all();
+
+  for (const pos of openPositions) {
+    const uuid = String(pos.order_uuid || "").trim();
+    if (!uuid || uuid.startsWith("upbit-bid-") || uuid.startsWith("order-bid-")) continue;
+    try {
+      await new Promise((r) => setTimeout(r, 150));
+      const qParams = { uuid };
+      const qToken = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), qParams);
+      const oResp = await fetch(`https://api.upbit.com/v1/order?uuid=${encodeURIComponent(uuid)}`, {
+        headers: {
+          Authorization: `Bearer ${qToken}`,
+          Accept: "application/json",
+        },
+      });
+      if (oResp.status === 200) {
+        const oDetail = await oResp.json();
+        const filledVol = Number(oDetail?.executed_volume || 0);
+        if (filledVol > 0) {
+          const exactVolStr = String(oDetail.executed_volume);
+          const tradesArr = Array.isArray(oDetail.trades) ? oDetail.trades : [];
+          const totalFunds = tradesArr.reduce((acc, t) => acc + Number(t.funds || 0), 0);
+          const exactAvgPrice = totalFunds > 0 ? Math.floor(totalFunds / filledVol) : Number(pos.avg_buy_price);
+          const exactFee =
+            oDetail.paid_fee !== undefined ? Math.ceil(Number(oDetail.paid_fee || pos.buy_fee || 0)) : Number(pos.buy_fee || 0);
+
+          db.prepare(
+            "UPDATE bot_positions SET volume = ?, avg_buy_price = ?, buy_fee = ? WHERE id = ?"
+          ).run(exactVolStr, exactAvgPrice, exactFee, pos.id);
+
+          if (pos.trade_id) {
+            db.prepare(
+              "UPDATE trades SET buy_price = ?, buy_volume = ? WHERE id = ?"
+            ).run(exactAvgPrice, exactVolStr, pos.trade_id);
+          }
+        }
+      }
+    } catch {}
+  }
+}
+
+setTimeout(async () => {
+  await reconcileOpenPositionsWithUpbit();
+  await runBotStrategiesCycle();
+}, 1000);
 setInterval(runBotStrategiesCycle, 10000);
+
 
