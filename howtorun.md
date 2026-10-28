@@ -99,12 +99,12 @@ cd ..
 ```powershell
 .\start.bat
 ```
-- 백엔드 서버(`http://127.0.0.1:8000`)와 프론트엔드 개발 서버(`http://localhost:9000`)가 각각의 콘솔 창으로 실행됩니다.
+- 백엔드 서버(`http://127.0.0.1:8001`)와 프론트엔드 개발 서버(`http://localhost:9000`)가 각각의 콘솔 창으로 실행됩니다.
 
 ### 방법 B: 터미널에서 수동으로 각각 실행
 1. **터미널 1 (Backend 실행)**:
    ```powershell
-   python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+   python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
    ```
 2. **터미널 2 (Frontend 실행)**:
    ```powershell
@@ -118,7 +118,7 @@ cd ..
 ## 5. 프로그램 종료 방법 (How to Stop)
 
 ### 방법 A: 원클릭 종료 스크립트 실행 (`stop.bat` 권장)
-탐색기에서 `stop.bat`을 더블클릭하거나 터미널에서 실행하면 백엔드(`8000` 포트)와 프론트엔드(`9000` 포트) 프로세스를 모두 찾아 안전하게 종료합니다.
+탐색기에서 `stop.bat`을 더블클릭하거나 터미널에서 실행하면 백엔드(`8001` 포트)와 프론트엔드(`9000` 포트) 프로세스를 모두 찾아 안전하게 종료합니다.
 ```powershell
 .\stop.bat
 ```

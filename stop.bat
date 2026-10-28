@@ -6,8 +6,8 @@ echo ========================================================
 echo   Upbit 다중 전략 코인 자동매매 시스템 종료 (Stop)
 echo ========================================================
 
-echo [1/2] 프론트엔드(Port 9000) 및 백엔드(Port 8000) 프로세스 종료 중...
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8000" ^| findstr "LISTENING"') do (
+echo [1/2] 프론트엔드(Port 9000) 및 백엔드(Port 8001) 프로세스 종료 중...
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8001" ^| findstr "LISTENING"') do (
     echo Stopping Backend PID: %%a
     taskkill /F /PID %%a > nul 2>&1
 )

@@ -30,12 +30,13 @@ if %ERRORLEVEL% NEQ 0 (
     python -m pip install -r "%ROOT_DIR%\backend\requirements.txt"
 )
 
-echo [1/2] Starting FastAPI Backend in background [Port: 8000]...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 > logs\backend.log 2>&1' -WorkingDirectory $env:ROOT_DIR -WindowStyle Hidden"
+echo [1/2] Starting FastAPI Backend in background [Port: 8001]...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 > logs\backend.log 2>&1' -WorkingDirectory $env:ROOT_DIR -WindowStyle Hidden"
 goto :START_FRONTEND
 
 :NO_PYTHON
-echo [WARN] Python is not installed or not in PATH. Backend [Port: 8000] skipped.
+echo [1/2] Starting SQLite Backend in background [Port: 8001]...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c node.exe backend\node_server.mjs > logs\backend.log 2>&1' -WorkingDirectory $env:ROOT_DIR -WindowStyle Hidden"
 
 :START_FRONTEND
 echo [2/2] Starting React Frontend in background [Port: 9000]...
@@ -44,7 +45,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 
 echo.
 echo Background startup triggered successfully!
 echo - Frontend URL : http://localhost:9000
-echo - Backend Docs : http://127.0.0.1:8000/docs
+echo - Backend Docs : http://127.0.0.1:8001/docs
 echo - Entry Code   : sws@2129
 echo - Log Files    : logs\backend.log, logs\frontend.log
 echo - How to Stop  : Run stop.bat
