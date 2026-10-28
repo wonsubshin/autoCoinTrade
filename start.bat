@@ -1,30 +1,53 @@
 @echo off
+setlocal
 chcp 65001 > nul
 title Upbit Auto Coin Trade - Background Launcher
 
+set "ROOT_DIR=%~dp0"
+if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
+set "FRONTEND_DIR=%ROOT_DIR%\frontend"
+set "PATH=D:\dev\tools\nodejs;%ROOT_DIR%\.venv\Scripts;%LOCALAPPDATA%\Programs\Python\Python313;%LOCALAPPDATA%\Programs\Python\Python313\Scripts;%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;%PATH%"
+
+if not exist "%ROOT_DIR%\logs" mkdir "%ROOT_DIR%\logs"
+
 echo ========================================================
-echo   Upbit 다중 전략 코인 자동매매 시스템 백그라운드 시작
+echo   Upbit Auto Coin Trade - Background Start
 echo ========================================================
 
-cd /d "%~dp0"
-if not exist "%~dp0logs" mkdir "%~dp0logs"
+if not exist "%FRONTEND_DIR%\node_modules\vite" (
+    echo [Setup] Installing frontend packages...
+    pushd "%FRONTEND_DIR%"
+    call npm.cmd install
+    popd
+)
 
-echo [1/2] Python FastAPI 백엔드 서버를 백그라운드로 실행 중 (Port: 8000)...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c title AutoCoinTrade-Backend && python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 >> ""%~dp0logs\backend.log"" 2>&1' -WorkingDirectory '%~dp0' -WindowStyle Hidden"
+python -c "import sys" >nul 2>nul
+if %ERRORLEVEL% NEQ 0 goto :NO_PYTHON
 
-echo [2/2] React 프론트엔드 로컬 웹 서버를 백그라운드로 실행 중 (Port: 9000)...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c title AutoCoinTrade-Frontend && npm run dev >> ""%~dp0logs\frontend.log"" 2>&1' -WorkingDirectory '%~dp0frontend' -WindowStyle Hidden"
+python -c "import fastapi, uvicorn" >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [Setup] Installing backend packages...
+    python -m pip install -r "%ROOT_DIR%\backend\requirements.txt"
+)
+
+echo [1/2] Starting FastAPI Backend in background [Port: 8000]...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 > logs\backend.log 2>&1' -WorkingDirectory $env:ROOT_DIR -WindowStyle Hidden"
+goto :START_FRONTEND
+
+:NO_PYTHON
+echo [WARN] Python is not installed or not in PATH. Backend [Port: 8000] skipped.
+
+:START_FRONTEND
+echo [2/2] Starting React Frontend in background [Port: 9000]...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c npm.cmd run dev > ..\logs\frontend.log 2>&1' -WorkingDirectory $env:FRONTEND_DIR -WindowStyle Hidden"
 
 echo.
-echo 백그라운드 실행이 완료되었습니다! (이 창을 닫아도 계속 실행됩니다)
-echo - 프론트엔드 웹 화면: http://localhost:9000
-echo - 백엔드 API 문서  : http://127.0.0.1:8000/docs
-echo - 입장 코드        : sws@2129
-echo - 실행 로그 위치   : logs\backend.log, logs\frontend.log
-echo - 종료 방법        : stop.bat 실행
+echo Background startup triggered successfully!
+echo - Frontend URL : http://localhost:9000
+echo - Backend Docs : http://127.0.0.1:8000/docs
+echo - Entry Code   : sws@2129
+echo - Log Files    : logs\backend.log, logs\frontend.log
+echo - How to Stop  : Run stop.bat
 echo ========================================================
-timeout /t 3 > nul
-
-
+ping 127.0.0.1 -n 3 > nul
+endlocal
