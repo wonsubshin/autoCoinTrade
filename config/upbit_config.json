@@ -1,0 +1,7 @@
+{
+  "access_key": "",
+  "secret_key": "",
+  "trade_mode": "paper",
+  "request_timeout_sec": 5.0,
+  "delay_threshold_ms": 800
+}

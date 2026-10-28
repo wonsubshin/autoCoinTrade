@@ -1,0 +1,518 @@
+:root {
+  --bg-primary: #0b0f19;
+  --bg-secondary: #111827;
+  --bg-card: #161f33;
+  --bg-card-hover: #1e293b;
+  --border-color: #26324d;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --accent-indigo: #6366f1;
+  --accent-indigo-hover: #4f46e5;
+  --status-green: #22c55e;
+  --status-yellow: #eab308;
+  --status-red: #ef4444;
+  --profit-red: #ef4444;
+  --loss-blue: #3b82f6;
+  --neutral-black: #000000;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* 입장 코드 (Gate) 화면 */
+.gate-wrapper {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at top, #172036 0%, #0b0f19 70%);
+  padding: 24px;
+}
+
+.gate-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 36px 32px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
+  text-align: center;
+}
+
+.gate-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(99, 102, 241, 0.16);
+  color: #a5b4fc;
+  margin-bottom: 14px;
+}
+
+.gate-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.gate-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+}
+
+.gate-input {
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 15px;
+  margin-bottom: 14px;
+  outline: none;
+}
+
+.gate-input:focus {
+  border-color: var(--accent-indigo);
+}
+
+.gate-error {
+  color: #f87171;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+/* 메인 2:8 레이아웃 (요구사항 7) */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+}
+
+.left-sidebar {
+  flex: 0 0 20%;
+  width: 20%;
+  min-width: 230px;
+  background-color: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 16px;
+}
+
+.right-content {
+  flex: 1 1 80%;
+  width: 80%;
+  background-color: var(--bg-primary);
+  padding: 28px 32px;
+  overflow-y: auto;
+}
+
+/* 좌측 상단 업비트 통신 상태 표시기 (요구사항 19) */
+.upbit-status-box {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 24px;
+  cursor: help;
+  transition: border-color 0.2s;
+}
+
+.upbit-status-box:hover {
+  border-color: #4f638c;
+}
+
+.status-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.status-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.status-indicator-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot.green {
+  background-color: var(--status-green);
+  box-shadow: 0 0 10px var(--status-green);
+}
+
+.status-dot.yellow {
+  background-color: var(--status-yellow);
+  box-shadow: 0 0 10px var(--status-yellow);
+}
+
+.status-dot.red {
+  background-color: var(--status-red);
+  box-shadow: 0 0 10px var(--status-red);
+}
+
+.status-label-text {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.status-label-text.green {
+  color: var(--status-green);
+}
+
+.status-label-text.yellow {
+  color: var(--status-yellow);
+}
+
+.status-label-text.red {
+  color: var(--status-red);
+}
+
+.status-Tooltip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 280px;
+  background: #090d16;
+  border: 1px solid #3b4c6b;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e2e8f0;
+  z-index: 100;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.75);
+}
+
+.upbit-status-box:hover .status-Tooltip {
+  display: block;
+}
+
+/* 좌측 메뉴 네비게이션 (요구사항 8) */
+.brand-header {
+  font-size: 17px;
+  font-weight: 800;
+  padding: 0 8px 18px 8px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 18px;
+  color: #e2e8f0;
+}
+
+.menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.menu-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 13px 16px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.menu-btn:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.menu-btn.active {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: rgba(99, 102, 241, 0.45);
+  color: #ffffff;
+}
+
+.sidebar-footer {
+  border-top: 1px solid var(--border-color);
+  padding-top: 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 공통 헤더 / 탭 / 카드 / 버튼 */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.page-title {
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.page-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.tab-btn {
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tab-btn.active {
+  background: var(--accent-indigo);
+  border-color: var(--accent-indigo);
+  color: #ffffff;
+}
+
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.bot-control-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.bot-meta-grid {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meta-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.meta-value {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.btn-group {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 10px 18px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent-indigo);
+  color: #ffffff;
+}
+
+.btn-start {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.btn-stop {
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.btn-outline {
+  background: var(--bg-card);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+/* 게시판 테이블 (요구사항 9, 12) */
+.table-container {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.board-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.board-table th {
+  text-align: left;
+  padding: 13px 14px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.board-table td {
+  padding: 13px 14px;
+  border-bottom: 1px solid rgba(38, 50, 77, 0.65);
+  vertical-align: middle;
+}
+
+.board-table tr:hover td {
+  background: rgba(30, 41, 59, 0.45);
+}
+
+/* 손익 색상 구분 (요구사항 12: 이익=빨간색, 손해=파란색, 그외=검은색) */
+.pnl-profit {
+  color: var(--profit-red);
+  font-weight: 700;
+}
+
+.pnl-loss {
+  color: var(--loss-blue);
+  font-weight: 700;
+}
+
+.pnl-Zero {
+  color: var(--neutral-black);
+  background-color: #d1d5db;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-weight: 700;
+  display: inline-block;
+}
+
+/* 설정 폼 그리드 */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.form-row label {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.form-input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+/* Modal Popup (요구사항 20, 21) */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  padding: 20px;
+}
+
+.modal-box {
+  width: 100%;
+  max-width: 440px;
+  background: var(--bg-secondary);
+  border: 1px solid #3b4c6b;
+  border-radius: 16px;
+  padding: 26px 24px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.85);
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.modal-body {
+  font-size: 14px;
+  color: #cbd5e1;
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+}

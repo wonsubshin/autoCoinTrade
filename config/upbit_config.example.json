@@ -1,0 +1,7 @@
+{
+  "access_key": "YOUR_UPBIT_ACCESS_KEY",
+  "secret_key": "YOUR_UPBIT_SECRET_KEY",
+  "trade_mode": "paper",
+  "request_timeout_sec": 5.0,
+  "delay_threshold_ms": 800
+}
