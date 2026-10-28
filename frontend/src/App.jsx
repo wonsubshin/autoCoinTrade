@@ -296,14 +296,32 @@ export default function App() {
       const resp = await fetch(`${API_BASE}/api/upbit/status`);
       if (resp.ok) {
         const data = await resp.json();
-        setUpbitStatus(data);
+        if (data && data.status) {
+          setUpbitStatus(data);
+        } else {
+          setUpbitStatus({
+            status: "red",
+            label: "통신불가",
+            latency_ms: 0,
+            reason: "업비트 통신 상태 응답 형식이 올바르지 않습니다.",
+            checked_at: new Date().toLocaleTimeString(),
+          });
+        }
+      } else {
+        setUpbitStatus({
+          status: "red",
+          label: "통신불가",
+          latency_ms: 0,
+          reason: `업비트/백엔드 API 통신 오류 (HTTP ${resp.status})`,
+          checked_at: new Date().toLocaleTimeString(),
+        });
       }
     } catch (err) {
       setUpbitStatus({
         status: "red",
         label: "통신불가",
         latency_ms: 0,
-        reason: `백엔드 서버와 통신할 수 없습니다 (${err.message})`,
+        reason: `백엔드 서버(Port 8000) 연결 불가: ${err.message}`,
         checked_at: new Date().toLocaleTimeString(),
       });
     }

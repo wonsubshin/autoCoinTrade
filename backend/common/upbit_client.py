@@ -184,31 +184,17 @@ class UpbitOpenAPIClient:
                 )
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
-            # 로컬/오프라인 환경이면서 paper 모드인 경우 안내 사유와 함께 상태 제공
-            if self.trade_mode == "paper":
-                self._health_state.update(
-                    {
-                        "status": "green",
-                        "color": "green",
-                        "label": "정상통신",
-                        "latency_ms": 42,
-                        "reason": "로컬 시뮬레이션(Paper) 엔진 정상 가동 중 (외부 네트워크 오프라인 폴백 활성)",
-                        "trade_mode": self.trade_mode,
-                        "checked_at": now_str,
-                    }
-                )
-            else:
-                self._health_state.update(
-                    {
-                        "status": "red",
-                        "color": "red",
-                        "label": "통신불가",
-                        "latency_ms": elapsed_ms,
-                        "reason": f"업비트 Open API 서버 연결 실패: {type(exc).__name__} ({exc})",
-                        "trade_mode": self.trade_mode,
-                        "checked_at": now_str,
-                    }
-                )
+            self._health_state.update(
+                {
+                    "status": "red",
+                    "color": "red",
+                    "label": "통신불가",
+                    "latency_ms": elapsed_ms,
+                    "reason": f"업비트 Open API 서버 연결 실패: {type(exc).__name__} ({exc})",
+                    "trade_mode": self.trade_mode,
+                    "checked_at": now_str,
+                }
+            )
 
         return dict(self._health_state)
 
@@ -542,3 +528,4 @@ class UpbitOpenAPIClient:
 
 
 upbit_client = UpbitOpenAPIClient()
+
