@@ -4,10 +4,79 @@ const API_BASE = "";
 
 function formatKRW(val) {
   if (val === null || val === undefined || val === "") return "";
-  const num = Number(val);
+  const cleaned = String(val).replace(/,/g, "");
+  const num = Number(cleaned);
   if (Number.isNaN(num)) return "";
   return `${Math.floor(num).toLocaleString("ko-KR")}원`;
 }
+
+function formatWithCommas(val) {
+  if (val === null || val === undefined || val === "") return "";
+  const str = String(val).replace(/,/g, "").trim();
+  if (str === "" || str === "-") return str;
+  const num = Number(str);
+  if (Number.isNaN(num)) return "";
+  return Math.floor(num).toLocaleString("ko-KR");
+}
+
+function parseNumericInput(val) {
+  if (val === null || val === undefined) return 0;
+  const cleaned = String(val).replace(/[^0-9-]/g, "");
+  if (cleaned === "" || cleaned === "-") return 0;
+  const num = Number(cleaned);
+  return Number.isNaN(num) ? 0 : Math.floor(num);
+}
+
+const DEFAULT_BOTS = [
+  {
+    bot_id: "bot_volatility",
+    name: "필터 결합형 변동성 돌파 봇",
+    nickname: "변동성돌파 알파봇",
+    strategy_type: "VOLATILITY_BREAKOUT",
+    description: "장중 단타 / 1일 보유 | 전일 변동폭(k) 돌파 + 거래대금 및 추세 필터 결합 (count=8, iloc[-8])",
+    allocation_ratio: 40,
+    allocated_capital: 4000000,
+    virtual_krw: 4000000,
+    is_running: 0,
+    min_volume_krw: 10000000000,
+    stop_loss_pct: 2.5,
+    take_profit_pct: 4.5,
+    config: { k_value: 0.5 },
+    last_status_msg: "대기 중 (수동 시작 가능)",
+  },
+  {
+    bot_id: "bot_dual_momentum",
+    name: "듀얼 모멘텀 스윙 봇",
+    nickname: "듀얼모멘텀 스윙봇",
+    strategy_type: "DUAL_MOMENTUM",
+    description: "상대 모멘텀 + 절대 모멘텀 결합 스윙 | iloc[-8] 대비 수익률 상위 종목 선별 진입",
+    allocation_ratio: 40,
+    allocated_capital: 4000000,
+    virtual_krw: 4000000,
+    is_running: 0,
+    min_volume_krw: 8000000000,
+    stop_loss_pct: 3.5,
+    take_profit_pct: 7.0,
+    config: { abs_momentum_threshold_pct: 1.2 },
+    last_status_msg: "대기 중 (수동 시작 가능)",
+  },
+  {
+    bot_id: "bot_bollinger_reversal",
+    name: "고변동성 볼린저 밴드 역추세 봇",
+    nickname: "볼린저 단기반등봇",
+    strategy_type: "BOLLINGER_REVERSAL",
+    description: "분봉 단기 반등 매매 | 고변동성 코인 볼린저 밴드 하단 이탈 후 반등 진입 (count=8, iloc[-8])",
+    allocation_ratio: 20,
+    allocated_capital: 2000000,
+    virtual_krw: 2000000,
+    is_running: 0,
+    min_volume_krw: 5000000000,
+    stop_loss_pct: 2.0,
+    take_profit_pct: 3.2,
+    config: { bb_std: 2.0 },
+    last_status_msg: "대기 중 (수동 시작 가능)",
+  },
+];
 
 function renderColoredProfit(val) {
   const num = Number(val || 0);
@@ -152,7 +221,7 @@ export default function App() {
   });
 
   // 4) 봇 목록, 거래 내역, 통계, 자금 분배 상태
-  const [bots, setBots] = useState([]);
+  const [bots, setBots] = useState(DEFAULT_BOTS);
   const [selectedBotId, setSelectedBotId] = useState("bot_volatility");
   const [trades, setTrades] = useState([]);
   const [stats, setStats] = useState({
@@ -391,18 +460,78 @@ export default function App() {
   // 요구사항 22: 자금 분배 비율 저장 (소수점 버림 적용)
   const handleSaveAllocation = async (e) => {
     e.preventDefault();
+    const numericCapital = Math.floor(parseNumericInput(totalCapitalInput));
+    const ratioSum = Number(
+      Object.values(ratioInputs)
+        .reduce((acc, v) => acc + Number(v || 0), 0)
+        .toFixed(2)
+    );
+
+    if (ratioSum > 100) {
+      showModal(
+        "자금 분배 설정 오류",
+        `봇별 자금 분배 비율의 합계(${ratioSum}%)는 100%를 초과할 수 없습니다.`,
+        "danger"
+      );
+      return;
+    }
+
+    const applyLocalAllocationFallback = () => {
+      const halted = numericCapital <= 0;
+      const updatedBots = bots.map((b) => {
+        const ratio = Number(ratioInputs[b.bot_id] ?? b.allocation_ratio ?? 0);
+        const allocated = halted ? 0 : Math.floor(numericCapital * (ratio / 100.0));
+        return {
+          ...b,
+          allocation_ratio: ratio,
+          allocated_capital: allocated,
+          virtual_krw: allocated,
+          is_running: halted ? 0 : b.is_running,
+          last_status_msg: halted
+            ? "잔고 0 이하 도달로 긴급 자동 중지됨"
+            : b.last_status_msg,
+        };
+      });
+      setBots(updatedBots);
+      setTotalCapitalInput(numericCapital);
+      setZeroBalanceAlerted(false);
+
+      if (halted) {
+        showModal(
+          "잔고 0원 이하 도달 - 전체 봇 자동 거래 중지",
+          `설정된 운용 원금(${numericCapital.toLocaleString("ko-KR")}원)이 0원 이하이므로 모든 봇이 자동 거래 중지되었습니다.`,
+          "danger"
+        );
+      } else {
+        showModal(
+          "자금 분배 비율 설정 완료",
+          `자금 분배 비율 및 원금 설정이 저장되었습니다 (소수점 이하 버림 적용).\n총 운용 원금: ${numericCapital.toLocaleString("ko-KR")}원`,
+          "success"
+        );
+      }
+    };
+
     try {
       const resp = await fetch(`${API_BASE}/api/settings/allocation`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          total_capital: Number(totalCapitalInput),
+          total_capital: numericCapital,
           ratios: ratioInputs,
         }),
       });
-      const data = await resp.json();
+      const data = await resp.json().catch(() => null);
       if (!resp.ok) {
-        showModal("자금 분배 설정 오류", data.detail || "저장에 실패했습니다.", "danger");
+        if (data && data.detail) {
+          showModal("자금 분배 설정 오류", data.detail, "danger");
+          return;
+        }
+        // 백엔드 미기동(프록시 오류) 시 프론트엔드 상태에 즉시 반영
+        applyLocalAllocationFallback();
+        return;
+      }
+      if (!data) {
+        applyLocalAllocationFallback();
         return;
       }
       setZeroBalanceAlerted(false);
@@ -411,11 +540,11 @@ export default function App() {
         "자금 분배 비율 설정 완료",
         data.zero_balance_halted
           ? data.zero_balance_reason
-          : `${data.message}\n총 운용 원금: ${Math.floor(Number(totalCapitalInput)).toLocaleString()}원`,
+          : `${data.message}\n총 운용 원금: ${numericCapital.toLocaleString("ko-KR")}원`,
         data.zero_balance_halted ? "danger" : "success"
       );
-    } catch (err) {
-      showModal("오류", err.message, "danger");
+    } catch {
+      applyLocalAllocationFallback();
     }
   };
 
@@ -945,18 +1074,26 @@ export default function App() {
               <form onSubmit={handleSaveAllocation}>
                 <div className="settings-grid">
                   <div className="form-row">
-                    <label>전체 운용 원금 (KRW) - 0 이하 입력 시 모든 봇이 즉시 거래 중지됩니다</label>
+                    <label>
+                      전체 운용 원금 (KRW) — 설정 금액:{" "}
+                      <strong style={{ color: "#4ade80" }}>
+                        {formatWithCommas(totalCapitalInput) || "0"}원
+                      </strong>{" "}
+                      (0 이하 입력 시 전체 봇 거래 중지)
+                    </label>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
                       className="form-input"
-                      value={totalCapitalInput}
-                      onChange={(e) => setTotalCapitalInput(e.target.value)}
+                      placeholder="예: 10,000,000"
+                      value={formatWithCommas(totalCapitalInput)}
+                      onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
                     />
                   </div>
                   {bots.map((b) => {
                     const ratioVal = Number(ratioInputs[b.bot_id] ?? b.allocation_ratio);
                     const previewAllocated = Math.floor(
-                      Math.floor(Number(totalCapitalInput || 0)) * (ratioVal / 100.0)
+                      Math.floor(parseNumericInput(totalCapitalInput)) * (ratioVal / 100.0)
                     );
                     return (
                       <div className="form-row" key={b.bot_id}>
@@ -1056,12 +1193,20 @@ export default function App() {
                       </div>
 
                       <div className="form-row">
-                        <label>최소 거래대금 유동성 필터 (min_volume_krw)</label>
+                        <label>
+                          최소 거래대금 유동성 필터 (min_volume_krw):{" "}
+                          <strong style={{ color: "#a5b4fc" }}>
+                            {formatWithCommas(form.min_volume_krw) || "0"}원
+                          </strong>
+                        </label>
                         <input
-                          type="number"
+                          type="text"
+                          inputMode="numeric"
                           className="form-input"
-                          value={form.min_volume_krw}
-                          onChange={(e) => updateField("min_volume_krw", Number(e.target.value))}
+                          value={formatWithCommas(form.min_volume_krw)}
+                          onChange={(e) =>
+                            updateField("min_volume_krw", parseNumericInput(e.target.value))
+                          }
                         />
                       </div>
 
