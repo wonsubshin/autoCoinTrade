@@ -36,11 +36,11 @@ goto :START_FRONTEND
 
 :NO_PYTHON
 echo [1/2] Starting SQLite Backend in background [Port: 8001]...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c node.exe backend\node_server.mjs > logs\backend.log 2>&1' -WorkingDirectory $env:ROOT_DIR -WindowStyle Hidden"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'D:\dev\tools\nodejs\node.exe' -ArgumentList 'backend\node_server.mjs' -WorkingDirectory $env:ROOT_DIR -RedirectStandardOutput '$env:ROOT_DIR\logs\backend.log' -RedirectStandardError '$env:ROOT_DIR\logs\backend_err.log' -WindowStyle Hidden"
 
 :START_FRONTEND
 echo [2/2] Starting React Frontend in background [Port: 9000]...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c npm.cmd run dev > ..\logs\frontend.log 2>&1' -WorkingDirectory $env:FRONTEND_DIR -WindowStyle Hidden"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'D:\dev\tools\nodejs\npm.cmd' -ArgumentList 'run dev' -WorkingDirectory $env:FRONTEND_DIR -RedirectStandardOutput '$env:ROOT_DIR\logs\frontend.log' -RedirectStandardError '$env:ROOT_DIR\logs\frontend_err.log' -WindowStyle Hidden"
 
 echo.
 echo Background startup triggered successfully!
