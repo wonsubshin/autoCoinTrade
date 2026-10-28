@@ -203,13 +203,24 @@ function ProfitLineChart({ series, periodLabel }) {
 }
 
 export default function App() {
-  // 1) 입장 코드 인증 상태 (요구사항 6: sws@2129)
-  const [authenticated, setAuthenticated] = useState(false);
+  // 1) 입장 코드 인증 상태 (요구사항 6: sws@2129, 새로고침 시 인증 및 현재 페이지 유지)
+  const [authenticated, setAuthenticated] = useState(() => {
+    return (
+      sessionStorage.getItem("autoCoinTrade_auth") === "true" ||
+      localStorage.getItem("autoCoinTrade_auth") === "true"
+    );
+  });
   const [entryCodeInput, setEntryCodeInput] = useState("");
   const [gateError, setGateError] = useState("");
 
-  // 2) 좌측 메뉴 상태 (거래현황 | 통계 | 설정)
-  const [activeMenu, setActiveMenu] = useState("trades");
+  // 2) 좌측 메뉴 상태 (거래현황 | 통계 | 설정 - 새로고침 시 현재 메뉴 유지)
+  const [activeMenu, setActiveMenu] = useState(() => {
+    return (
+      sessionStorage.getItem("autoCoinTrade_menu") ||
+      localStorage.getItem("autoCoinTrade_menu") ||
+      "trades"
+    );
+  });
 
   // 3) 업비트 통신 상태 (요구사항 19: 정상 초록 / 지연 노랑 / 불가 빨강 + 이유 툴팁)
   const [upbitStatus, setUpbitStatus] = useState({
@@ -222,7 +233,13 @@ export default function App() {
 
   // 4) 봇 목록, 거래 내역, 통계, 자금 분배 상태
   const [bots, setBots] = useState(DEFAULT_BOTS);
-  const [selectedBotId, setSelectedBotId] = useState("bot_volatility");
+  const [selectedBotId, setSelectedBotId] = useState(() => {
+    return (
+      sessionStorage.getItem("autoCoinTrade_bot") ||
+      localStorage.getItem("autoCoinTrade_bot") ||
+      "bot_volatility"
+    );
+  });
   const [trades, setTrades] = useState([]);
   const [stats, setStats] = useState({
     start_date: "2026.10.01",
@@ -231,7 +248,13 @@ export default function App() {
     monthly: [],
     coin_ranking: [],
   });
-  const [statsPeriodTab, setStatsPeriodTab] = useState("daily");
+  const [statsPeriodTab, setStatsPeriodTab] = useState(() => {
+    return (
+      sessionStorage.getItem("autoCoinTrade_statsTab") ||
+      localStorage.getItem("autoCoinTrade_statsTab") ||
+      "daily"
+    );
+  });
 
   // 5) 설정 화면용 상태
   const [totalCapitalInput, setTotalCapitalInput] = useState(10000000);
@@ -269,6 +292,8 @@ export default function App() {
     const normalized = trimmed.replace(/^ㄴㅈㄴ/, "sws");
 
     if (normalized === "sws@2129") {
+      sessionStorage.setItem("autoCoinTrade_auth", "true");
+      localStorage.setItem("autoCoinTrade_auth", "true");
       setAuthenticated(true);
       return;
     }
@@ -280,6 +305,8 @@ export default function App() {
         body: JSON.stringify({ code: normalized }),
       });
       if (resp.ok) {
+        sessionStorage.setItem("autoCoinTrade_auth", "true");
+        localStorage.setItem("autoCoinTrade_auth", "true");
         setAuthenticated(true);
       } else {
         const err = await resp.json().catch(() => ({}));
@@ -412,9 +439,26 @@ export default function App() {
     return () => clearInterval(timer);
   }, [authenticated, selectedBotId]);
 
+  useEffect(() => {
+    sessionStorage.setItem("autoCoinTrade_menu", activeMenu);
+    localStorage.setItem("autoCoinTrade_menu", activeMenu);
+  }, [activeMenu]);
+
+  useEffect(() => {
+    sessionStorage.setItem("autoCoinTrade_bot", selectedBotId);
+    localStorage.setItem("autoCoinTrade_bot", selectedBotId);
+  }, [selectedBotId]);
+
+  useEffect(() => {
+    sessionStorage.setItem("autoCoinTrade_statsTab", statsPeriodTab);
+    localStorage.setItem("autoCoinTrade_statsTab", statsPeriodTab);
+  }, [statsPeriodTab]);
+
   // 메뉴 전환 시 처리 (거래현황 진입 시 잔고 0 이하 여부 즉시 체크하여 모달 표기)
   const handleMenuChange = (menuKey) => {
     setActiveMenu(menuKey);
+    sessionStorage.setItem("autoCoinTrade_menu", menuKey);
+    localStorage.setItem("autoCoinTrade_menu", menuKey);
     if (menuKey === "trades") {
       fetchOverviewAndBots(true);
       fetchTrades(selectedBotId);
