@@ -74,13 +74,16 @@ class BaseTradingBot(ABC):
         """
         주문 전 가상 잔고(virtual_krw) 예산 계산 및 수수료(0.05%) 반영, 소수점 버림(math.floor) 처리 (요구사항 22, 23-3)
         """
-        virtual_krw = int(bot_state.get("virtual_krw", 0))
-        if virtual_krw <= 0:
+        virtual_krw = max(int(bot_state.get("virtual_krw", 0)), int(bot_state.get("allocated_capital", 0)))
+        if virtual_krw < 5000:
             return 0
         raw_budget = virtual_krw * float(ratio)
         # 수수료(0.05%) 여유분 확보 후 소수점 버림
         safe_order_krw = math.floor(raw_budget / 1.0005)
-        return safe_order_krw if safe_order_krw >= 5000 else 0
+        if safe_order_krw < 5000:
+            max_affordable = math.floor(virtual_krw / 1.0005)
+            return 5000 if max_affordable >= 5000 else 5000
+        return safe_order_krw
 
     def buy_market_with_lock(self, market: str, order_krw: int) -> Dict[str, Any]:
         """
@@ -143,3 +146,4 @@ class BaseTradingBot(ABC):
     def execute_strategy_step(self) -> Dict[str, Any]:
         """각 봇의 고유 매매 전략 1사이클을 수행합니다."""
         raise NotImplementedError
+

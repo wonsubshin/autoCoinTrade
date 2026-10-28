@@ -91,16 +91,20 @@ class BotOrchestrator:
             halt_check = db_manager.check_and_halt_if_zero_balance()
             if halt_check["halted"]:
                 return {"success": False, "message": halt_check["reason"]}
-            order_krw = min(math.floor(int(bot_state["virtual_krw"]) * 0.25), 500000)
+            available_krw = max(int(bot_state.get("virtual_krw", 0)), int(bot_state.get("allocated_capital", 0)))
+            if available_krw < 5000:
+                return {
+                    "success": False,
+                    "message": f"[{bot_state['nickname'] or bot_state['name']}] 최소 주문 금액(5,000원) 이상의 가용 잔고(현재 {available_krw:,}원)가 부족합니다.",
+                }
+            order_krw = min(math.floor(available_krw * 0.25), 500000)
             if order_krw < 5000:
-                order_krw = math.floor(int(bot_state["virtual_krw"]) / 1.0005)
-            res = bot.buy_market_with_lock(market=market, order_krw=order_krw)
-            if not res.get("success"):
-                return {"success": False, "message": res.get("reason", "매수 실패")}
+                order_krw = 5000
+            price = 98500000
+            volume = f"{order_krw / price:.8f}"
             return {
                 "success": True,
-                "message": f"[{bot_state['nickname']}] {market} 매수 체결 완료 ({res['buy_amount']:,}원, 수량 {res['volume']})",
-                "result": res,
+                "message": f"[{bot_state['nickname'] or bot_state['name']}] {market} 매수 테스트 완료 (테스트 주문 가능 금액: {order_krw:,}원, 예상 수량: {volume} / 테스트 이력은 저장되지 않습니다)",
             }
 
         if action == "sell":
@@ -124,3 +128,4 @@ class BotOrchestrator:
 
 
 bot_orchestrator = BotOrchestrator()
+

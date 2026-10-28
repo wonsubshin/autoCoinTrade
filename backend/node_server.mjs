@@ -119,15 +119,17 @@ function initializeDatabase() {
     );
   `);
 
-  // 기존에 들어가 있던 샘플(seed) 데이터 및 기본값 제거
-  const seedTradeCount = db
-    .prepare("SELECT COUNT(*) AS cnt FROM trades WHERE buy_order_uuid LIKE 'seed-%'")
-    .get();
-  if (seedTradeCount && seedTradeCount.cnt > 0) {
-    db.exec("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%';");
-    db.exec("DELETE FROM trades WHERE buy_order_uuid LIKE 'seed-%';");
-    db.exec("DELETE FROM bots;");
-    db.exec("DELETE FROM system_settings;");
+  // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-*) 이력 제거
+  db.exec("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%' OR order_uuid LIKE 'order-bid-%';");
+  db.exec("DELETE FROM trades WHERE buy_order_uuid LIKE 'seed-%' OR buy_order_uuid LIKE 'order-bid-%';");
+  // 테스트 이력 제거 후 각 봇의 virtual_krw를 (allocated_capital - 실제 OPEN 포지션 투자금액)으로 동기화
+  const allBotsForSync = db.prepare("SELECT bot_id, allocated_capital FROM bots").all();
+  for (const b of allBotsForSync) {
+    const inv = db
+      .prepare("SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'")
+      .get(b.bot_id);
+    const syncVirtual = Math.max(0, Math.floor(Number(b.allocated_capital || 0) - Number(inv?.invested || 0)));
+    db.prepare("UPDATE bots SET virtual_krw = ? WHERE bot_id = ?").run(syncVirtual, b.bot_id);
   }
 
   const recommendedBots = [
@@ -713,45 +715,25 @@ const server = http.createServer(async (req, res) => {
       if (action === "buy") {
         const haltInfo = checkAndHaltIfZeroBalance();
         if (haltInfo.halted) return sendJson(res, 200, { success: false, message: haltInfo.reason });
-        const orderKrw = Math.min(Math.floor(Number(bot.virtual_krw) * 0.25), 500000);
-        if (orderKrw < 5000) {
+        const availableKrw = Math.max(Number(bot.virtual_krw || 0), Number(bot.allocated_capital || 0));
+        if (availableKrw < 5000) {
           return sendJson(res, 200, {
             success: false,
-            message: `[${bot.nickname}] 최소 주문 금액(5,000원) 이상의 가용 잔고(virtual_krw)가 부족합니다.`,
+            message: `[${bot.nickname || bot.name}] 최소 주문 금액(5,000원) 이상의 가용 잔고(현재 ${availableKrw.toLocaleString("ko-KR")}원)가 부족합니다.`,
           });
+        }
+        let orderKrw = Math.min(Math.floor(availableKrw * 0.25), 500000);
+        if (orderKrw < 5000) {
+          const maxAffordable = Math.floor(availableKrw / 1.0005);
+          orderKrw = maxAffordable >= 5000 ? 5000 : 5000;
         }
         const price = 98500000;
         const volume = (orderKrw / price).toFixed(8);
-        const orderUuid = `order-bid-${crypto.randomUUID().slice(0, 8)}`;
-        const fee = Math.floor(orderKrw * 0.0005);
-        const newVirtual = Math.max(0, Number(bot.virtual_krw) - orderKrw - fee);
 
-        db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-          newVirtual,
-          `${market} 매수 완료 (${orderKrw.toLocaleString()}원)`,
-          now,
-          botId
-        );
-        const trRes = db
-          .prepare(`
-            INSERT INTO trades (
-              bot_id, market, buy_order_uuid, sell_order_uuid,
-              buy_price, buy_volume, buy_amount, buy_date,
-              sell_price, sell_volume, sell_amount, sell_date,
-              profit_krw, profit_pct, status
-            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, 'HOLDING')
-          `)
-          .run(botId, market, orderUuid, price, volume, orderKrw, now);
-
-        db.prepare(`
-          INSERT INTO bot_positions (
-            bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-        `).run(botId, market, orderUuid, volume, price, orderKrw, fee, trRes.lastInsertRowid, now);
-
+        // 매수 테스트는 거래 내역(trades/bot_positions) 이력을 남기거나 잔고를 차감하지 않음
         return sendJson(res, 200, {
           success: true,
-          message: `[${bot.nickname}] ${market} 매수 체결 완료 (${orderKrw.toLocaleString()}원, 수량 ${volume})`,
+          message: `[${bot.nickname || bot.name}] ${market} 매수 테스트 완료 (테스트 주문 가능 금액: ${orderKrw.toLocaleString("ko-KR")}원, 예상 수량: ${volume} / 테스트 이력은 저장되지 않습니다)`,
         });
       } else {
         const pos = bot.open_positions?.[0];

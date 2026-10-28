@@ -1012,7 +1012,7 @@ export default function App() {
                     <button
                       className="btn btn-outline"
                       onClick={() => handleManualTradeTest(currentBot.bot_id, "buy")}
-                      title="해당 봇의 virtual_krw 예산 락을 거쳐 즉시 매수 Row를 생성합니다"
+                      title="거래 이력을 남기지 않고 해당 봇의 할당 원금/가용 잔고 기준 매수 가능 여부를 테스트합니다"
                     >
                       + 매수 테스트
                     </button>
