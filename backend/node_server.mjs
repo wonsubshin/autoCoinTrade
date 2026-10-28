@@ -1199,6 +1199,42 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
     }
     const orderData = await resp.json();
     orderUuid = orderData?.uuid || `upbit-bid-${crypto.randomUUID().slice(0, 8)}`;
+
+    // 주문 체결 확인 (Order Reconciliation: GET /v1/order?uuid=...)
+    if (orderData?.uuid) {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await new Promise((r) => setTimeout(r, 400));
+        try {
+          const qParams = { uuid: orderData.uuid };
+          const qToken = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), qParams);
+          const oResp = await fetch(
+            `https://api.upbit.com/v1/order?uuid=${encodeURIComponent(orderData.uuid)}`,
+            {
+              headers: {
+                Authorization: `Bearer ${qToken}`,
+                Accept: "application/json",
+              },
+            }
+          );
+          if (oResp.status === 200) {
+            const oDetail = await oResp.json();
+            const filledVol = Number(oDetail?.executed_volume || 0);
+            if (filledVol > 0) {
+              execVolume = String(oDetail.executed_volume);
+              const tradesArr = Array.isArray(oDetail.trades) ? oDetail.trades : [];
+              const totalFunds = tradesArr.reduce((acc, t) => acc + Number(t.funds || 0), 0);
+              if (totalFunds > 0) {
+                execPrice = Math.floor(totalFunds / filledVol);
+              }
+              if (oDetail.paid_fee !== undefined) {
+                fee = Math.ceil(Number(oDetail.paid_fee || fee));
+              }
+              break;
+            }
+          }
+        } catch {}
+      }
+    }
   } catch (err) {
     db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
       `${market} 매수 API 통신 오류: ${err.message}`,
