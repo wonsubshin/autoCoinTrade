@@ -117,6 +117,17 @@ function initializeDatabase() {
       created_at TEXT NOT NULL,
       closed_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS ai_market_briefings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'gemini',
+      model TEXT NOT NULL DEFAULT 'gemini-1.5-flash',
+      btc_price REAL,
+      btc_daily_20ma REAL,
+      btc_4h_60ma REAL,
+      regime_status TEXT,
+      briefing_text TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-* / auto-bid-*) 가상 이력 제거
@@ -748,6 +759,279 @@ function readJsonBody(req) {
   });
 }
 
+function getGeminiApiKey() {
+  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  } catch {}
+  if (cfg.gemini_api_key && cfg.gemini_api_key !== "YOUR_GEMINI_API_KEY_HERE" && cfg.gemini_api_key.trim().length > 0) {
+    return cfg.gemini_api_key.trim();
+  }
+  const dbKey = getSetting("gemini_api_key", "");
+  if (dbKey && dbKey.trim().length > 0) {
+    return dbKey.trim();
+  }
+  return (process.env.GEMINI_API_KEY || "").trim();
+}
+
+function saveGeminiApiKey(key) {
+  const cleanKey = (key || "").trim();
+  try {
+    let cfg = {};
+    if (fs.existsSync(CONFIG_PATH)) {
+      cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+    }
+    cfg.gemini_api_key = cleanKey;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Failed to write to config/upbit_config.json:", err.message);
+  }
+  const now = nowKSTString();
+  const db = getDb();
+  db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('gemini_api_key', ?, ?)").run(cleanKey, now);
+  return cleanKey;
+}
+
+function getLatestAiBriefing() {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM ai_market_briefings ORDER BY id DESC LIMIT 1").get();
+  const apiKey = getGeminiApiKey();
+  const maskedKey = apiKey ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}` : "";
+  return {
+    has_key: !!apiKey,
+    masked_key: maskedKey,
+    latest: row || null,
+  };
+}
+
+async function generateAiMarketAnalysis() {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return {
+      success: false,
+      error: "NO_API_KEY",
+      message: "Gemini API 키가 등록되지 않았습니다. config/upbit_config.json 파일의 gemini_api_key 항목에 키를 입력하시거나 웹 화면에서 등록해주세요.",
+    };
+  }
+
+  // 1. 시장 체제 데이터 (BTC 이평선 등)
+  const regimeFilter = await checkMarketRegimeFilter();
+  const btcPrice = Number(regimeFilter.btcPrice || 0);
+  const btcDaily20Ma = Number(regimeFilter.ma20Day || 0);
+  const btc4h60Ma = Number(regimeFilter.ma60_4h || 0);
+  const isHoldCash = regimeFilter.allowBuy === false;
+  const regimeReason = regimeFilter.reason || "";
+
+  // 2. 업비트 실계좌 자산 데이터
+  const accInfo = await fetchUpbitAccountBalance();
+  const totalBuyKrw = Number(accInfo.total_buy_krw || 0);
+  const totalEvalKrw = Number(accInfo.total_eval_krw || 0);
+  const evalProfitPct = accInfo.eval_profit_pct !== null ? accInfo.eval_profit_pct : 0;
+  const orderableKrw = Number(accInfo.orderable_krw || 0);
+
+  // 3. 봇별 가동 및 보유 포지션 데이터
+  const bots = getBots();
+  const db = getDb();
+  const botsData = bots.map((b) => {
+    const openPositions = db
+      .prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND status = 'OPEN' ORDER BY id DESC")
+      .all(b.bot_id);
+    return {
+      id: b.bot_id,
+      name: b.name,
+      nickname: b.nickname,
+      strategy_type: b.strategy_type,
+      allocated_capital: b.allocated_capital,
+      virtual_krw: b.virtual_krw,
+      used_capital: b.used_capital,
+      is_running: b.is_running === 1,
+      last_status_msg: b.last_status_msg,
+      open_positions: openPositions.map((p) => ({
+        market: p.market,
+        buy_amount: p.buy_amount,
+        avg_buy_price: p.avg_buy_price,
+        volume: p.volume,
+        created_at: p.created_at,
+      })),
+    };
+  });
+
+  // 4. 주요 코인 실시간 시세 (BTC, ETH, SOL, DOGE, XRP)
+  let tickerInfo = "";
+  try {
+    const targetMarkets = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-DOGE", "KRW-XRP"];
+    const tResp = await fetch(`https://api.upbit.com/v1/ticker?markets=${targetMarkets.join(",")}`);
+    if (tResp.ok) {
+      const tickers = await tResp.json();
+      tickerInfo = tickers
+        .map(
+          (t) =>
+            `- ${t.market}: 현재가 ${Number(t.trade_price).toLocaleString("ko-KR")}원 (전일대비 ${(
+              Number(t.signed_change_rate) * 100
+            ).toFixed(2)}%, 24시간 거래대금 ${Math.floor(Number(t.acc_trade_price_24h) / 100000000).toLocaleString(
+              "ko-KR"
+            )}억원)`
+        )
+        .join("\n");
+    }
+  } catch (err) {
+    tickerInfo = "- 주요 종목 시세 수신 일시 지연";
+  }
+
+  // 5. 종합 프롬프트 구성
+  const nowStr = nowKSTString();
+  const prompt = `당신은 대한민국 최고 수준의 가상자산 퀀트 트레이딩 시스템 'Upbit AutoCoinTrade'의 수석 AI 마켓 애널리스트입니다.
+아래는 ${nowStr} 기준, 시스템이 업비트 실거래소와 3개 자동매매 봇 엔진에서 실시간으로 수집한 팩트 데이터입니다.
+
+이 데이터를 바탕으로 사용자가 현재 코인 시장 상황과 봇들의 움직임(왜 매수를 멈추고 있는지, 왜 특정 코인을 보유 중인지)을 명확하게 납득할 수 있도록 전문적이면서도 친절하고 신뢰감 넘치는 마켓 브리핑을 작성해주세요.
+
+### [실시간 수집 팩트 데이터]
+1. 비트코인 시장 체제 지표:
+- 비트코인(KRW-BTC) 현재가: ${btcPrice ? btcPrice.toLocaleString("ko-KR") + "원" : "데이터 수신 중"}
+- 일봉 20일 이동평균선(20 MA): ${btcDaily20Ma ? Math.floor(btcDaily20Ma).toLocaleString("ko-KR") + "원" : "-"} (괴리율: ${
+    btcPrice && btcDaily20Ma ? (((btcPrice - btcDaily20Ma) / btcDaily20Ma) * 100).toFixed(2) + "%" : "-"
+  })
+- 4시간봉 60선(60 MA): ${btc4h60Ma ? Math.floor(btc4h60Ma).toLocaleString("ko-KR") + "원" : "-"} (괴리율: ${
+    btcPrice && btc4h60Ma ? (((btcPrice - btc4h60Ma) / btc4h60Ma) * 100).toFixed(2) + "%" : "-"
+  })
+- 시장 체제 필터(Regime Filter) 상태: ${
+    isHoldCash ? "🔴 신규 매수 전면 차단 / 현금 보유(Hold Cash) 발동 중" : "🟢 정상 거래 허용 (상승 추세)"
+  }
+- 필터 사유: ${regimeReason}
+
+2. 주요 코인 시세 현황:
+${tickerInfo}
+
+3. 업비트 계좌 현황:
+- 총 매수금액: ${totalBuyKrw.toLocaleString("ko-KR")}원
+- 총 평가금액: ${totalEvalKrw.toLocaleString("ko-KR")}원 (평가손익률: ${evalProfitPct}%)
+- 주문가능 현금: ${orderableKrw.toLocaleString("ko-KR")}원
+
+4. 3개 봇 실시간 상태:
+${botsData
+  .map(
+    (b) => `[${b.nickname} (${b.name})]
+- 전략: ${b.strategy_type}
+- 가동 상태: ${b.is_running ? "가동 중 (ON)" : "중지됨 (OFF)"}
+- 배정 원금: ${b.allocated_capital.toLocaleString("ko-KR")}원 / 사용 중인 금액: ${b.used_capital.toLocaleString(
+      "ko-KR"
+    )}원 / 가용 잔고: ${b.virtual_krw.toLocaleString("ko-KR")}원
+- 최신 상태 메시지: ${b.last_status_msg}
+- 보유 포지션 수: ${b.open_positions.length}건
+${b.open_positions
+  .map(
+    (p) =>
+      `  * 종목: ${p.market}, 매수금액: ${p.buy_amount.toLocaleString("ko-KR")}원, 매수가: ${Number(
+        p.avg_buy_price
+      ).toLocaleString("ko-KR")}원, 매수시각: ${p.created_at}`
+  )
+  .join("\n")}`
+  )
+  .join("\n\n")}
+
+---
+
+### [작성 요청 가이드라인]
+반드시 다음 3개 섹션 구조와 마크다운(Markdown) 서식으로 작성하세요:
+
+## 1. 📊 시장 체제(Regime) 종합 진단
+- 비트코인의 현재가와 일봉 20MA / 4시간 60MA 위치를 근거로 현재 시장이 하락/조정 장세인지, 횡보/관망 장세인지, 상승장인지 명확히 진단해주세요.
+- 왜 전 봇에 '신규 매수 차단(Hold Cash)'이 내려졌는지, 이것이 계좌 보호에 왜 중요한지 설명해주세요.
+
+## 2. 🤖 봇별 행동 및 움직임 상세 분석
+- **돌파봇-알파 (변동성 돌파)**: 왜 현재 매수하지 않고 현금을 쥐고 있는지 이유 설명
+- **모멘텀봇-베타 (듀얼 모멘텀)**: 왜 진입하지 않고 대기 중인지 이유 설명
+- **볼린저봇-감마 (볼린저 역추세)**: 현재 보유 중인 포지션(있다면 종목별)에 대한 현황 및 익절(+3.5%)/손절(-2.0%) 감시 상태 진단
+
+## 3. 💡 향후 체크포인트 & 운용 가이드
+- 비트코인이 대략 어느 가격대(일봉 20MA 등)를 넘어서야 봇들이 다시 적극적으로 매수를 재개하는지 구체적 가격 제시
+- 사용자에게 당부하는 리스크 관리 및 심리적 조언 한마디
+
+이모지와 깔끔한 불릿포인트, 굵은 글씨를 활용하여 가독성을 극대화해주세요.`;
+
+  // 6. Gemini API 호출
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(
+    apiKey
+  )}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutTimer = setTimeout(() => controller.abort(), 25000);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 2500,
+        },
+      }),
+    });
+    clearTimeout(timeoutTimer);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("Gemini API Error Response:", errText);
+      let errMsg = `Gemini API 호출 실패 (HTTP ${response.status})`;
+      try {
+        const errJson = JSON.parse(errText);
+        if (errJson?.error?.message) {
+          errMsg = `Gemini API 오류: ${errJson.error.message}`;
+        }
+      } catch {}
+      return { success: false, error: "API_CALL_FAILED", message: errMsg };
+    }
+
+    const resJson = await response.json();
+    const analysisText = resJson.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!analysisText) {
+      return { success: false, error: "NO_CONTENT", message: "Gemini AI 응답에서 텍스트를 추출하지 못했습니다." };
+    }
+
+    // 7. DB 저장
+    const insertStmt = db.prepare(`
+      INSERT INTO ai_market_briefings (
+        provider, model, btc_price, btc_daily_20ma, btc_4h_60ma, regime_status, briefing_text, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const info = insertStmt.run(
+      "gemini",
+      "gemini-1.5-flash",
+      btcPrice,
+      btcDaily20Ma,
+      btc4h60Ma,
+      isHoldCash ? "HOLD_CASH" : "NORMAL",
+      analysisText,
+      nowStr
+    );
+
+    return {
+      success: true,
+      briefing: {
+        id: info.lastInsertRowid,
+        provider: "gemini",
+        model: "gemini-1.5-flash",
+        btc_price: btcPrice,
+        btc_daily_20ma: btcDaily20Ma,
+        btc_4h_60ma: btc4h60Ma,
+        regime_status: isHoldCash ? "HOLD_CASH" : "NORMAL",
+        briefing_text: analysisText,
+        created_at: nowStr,
+      },
+    };
+  } catch (err) {
+    console.error("Gemini API Request Exception:", err);
+    return {
+      success: false,
+      error: "REQUEST_EXCEPTION",
+      message: `Gemini API 통신 중 예외가 발생했습니다: ${err.message}`,
+    };
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(200, {
@@ -801,6 +1085,27 @@ const server = http.createServer(async (req, res) => {
         zero_balance_halted: haltInfo.halted,
         zero_balance_reason: haltInfo.reason,
       });
+    }
+
+    if (pathname === "/api/ai/briefing" && req.method === "GET") {
+      const data = getLatestAiBriefing();
+      return sendJson(res, 200, data);
+    }
+
+    if (pathname === "/api/ai/save-key" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const key = (body?.gemini_api_key || "").trim();
+      saveGeminiApiKey(key);
+      return sendJson(res, 200, {
+        success: true,
+        has_key: !!key,
+        masked_key: key ? `${key.slice(0, 6)}...${key.slice(-4)}` : "",
+      });
+    }
+
+    if (pathname === "/api/ai/analyze" && req.method === "POST") {
+      const result = await generateAiMarketAnalysis();
+      return sendJson(res, result.success ? 200 : 400, result);
     }
 
     const startStopMatch = pathname.match(/^\/api\/bots\/([^/]+)\/(start|stop)$/);

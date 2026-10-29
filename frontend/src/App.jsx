@@ -288,6 +288,76 @@ function ProfitLineChart({ series, periodLabel }) {
   );
 }
 
+function MarkdownViewer({ content }) {
+  if (!content) return null;
+  const lines = content.split("\n");
+  const elements = [];
+  let currentList = [];
+
+  const flushList = () => {
+    if (currentList.length > 0) {
+      elements.push(
+        <ul key={`ul-${elements.length}`} style={{ margin: "8px 0 12px 20px", paddingLeft: "10px", lineHeight: "1.7" }}>
+          {currentList.map((item, idx) => (
+            <li key={idx} style={{ marginBottom: "4px", color: "#e2e8f0" }}>{renderFormattedText(item)}</li>
+          ))}
+        </ul>
+      );
+      currentList = [];
+    }
+  };
+
+  const renderFormattedText = (text) => {
+    const parts = text.split(/(\*\*[^*]+\*\*)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return <strong key={i} style={{ color: "#38bdf8", fontWeight: 700 }}>{part.slice(2, -2)}</strong>;
+      }
+      return part;
+    });
+  };
+
+  lines.forEach((rawLine, index) => {
+    const line = rawLine.trimEnd();
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      currentList.push(line.slice(2));
+      return;
+    }
+    flushList();
+
+    if (line.startsWith("### ")) {
+      elements.push(
+        <h4 key={index} style={{ fontSize: "15px", fontWeight: 700, color: "#cbd5e1", margin: "14px 0 6px" }}>
+          {renderFormattedText(line.slice(4))}
+        </h4>
+      );
+    } else if (line.startsWith("## ")) {
+      elements.push(
+        <h3 key={index} style={{ fontSize: "16px", fontWeight: 700, color: "#f8fafc", margin: "18px 0 8px", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "6px" }}>
+          {renderFormattedText(line.slice(3))}
+        </h3>
+      );
+    } else if (line.startsWith("# ")) {
+      elements.push(
+        <h2 key={index} style={{ fontSize: "18px", fontWeight: 800, color: "#38bdf8", margin: "20px 0 10px" }}>
+          {renderFormattedText(line.slice(2))}
+        </h2>
+      );
+    } else if (line.trim().length === 0) {
+      elements.push(<div key={index} style={{ height: "6px" }} />);
+    } else {
+      elements.push(
+        <p key={index} style={{ margin: "4px 0", lineHeight: "1.65", color: "#cbd5e1" }}>
+          {renderFormattedText(line)}
+        </p>
+      );
+    }
+  });
+
+  flushList();
+  return <div style={{ fontSize: "13.5px", color: "#e2e8f0" }}>{elements}</div>;
+}
+
 export default function App() {
   // 1) 입장 코드 인증 상태 (요구사항 6: sws@2129, 새로고침 시 인증 및 현재 페이지 유지)
   const [authenticated, setAuthenticated] = useState(() => {
@@ -372,12 +442,98 @@ export default function App() {
   });
   const [zeroBalanceAlerted, setZeroBalanceAlerted] = useState(false);
 
+  // 7) AI 실시간 마켓 브리핑 상태 (Gemini 1.5 Flash)
+  const [aiBriefing, setAiBriefing] = useState({
+    has_key: false,
+    masked_key: "",
+    latest: null,
+  });
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiKeyInput, setAiKeyInput] = useState("");
+  const [showAiKeyConfig, setShowAiKeyConfig] = useState(false);
+
   const showModal = (title, message, type = "info") => {
     setModalInfo({ open: true, title, message, type });
   };
 
   const closeModal = () => {
     setModalInfo((prev) => ({ ...prev, open: false }));
+  };
+
+  const fetchAiBriefing = async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/ai/briefing`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setAiBriefing(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch AI briefing:", err);
+    }
+  };
+
+  const triggerAiAnalysis = async () => {
+    setAiLoading(true);
+    setAiError("");
+    try {
+      const resp = await fetch(`${API_BASE}/api/ai/analyze`, {
+        method: "POST",
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        setAiBriefing((prev) => ({
+          ...prev,
+          latest: data.briefing,
+        }));
+      } else {
+        setAiError(data.message || "AI 시황 분석 중 오류가 발생했습니다.");
+        if (data.error === "NO_API_KEY") {
+          setShowAiKeyConfig(true);
+        }
+      }
+    } catch (err) {
+      setAiError(`서버 연결 오류: ${err.message}`);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleSaveAiKey = async () => {
+    if (!aiKeyInput.trim()) {
+      setAiError("Gemini API 키를 입력해주세요.");
+      return;
+    }
+    setAiLoading(true);
+    setAiError("");
+    try {
+      const resp = await fetch(`${API_BASE}/api/ai/save-key`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gemini_api_key: aiKeyInput.trim() }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        setAiBriefing((prev) => ({
+          ...prev,
+          has_key: data.has_key,
+          masked_key: data.masked_key,
+        }));
+        setAiKeyInput("");
+        setShowAiKeyConfig(false);
+        showModal(
+          "Gemini API 키 저장 완료",
+          "Gemini API 키가 config/upbit_config.json에 성공적으로 저장되었습니다. 이제 [AI 시황 분석 요청]을 실행하실 수 있습니다.",
+          "success"
+        );
+      } else {
+        setAiError("API 키 저장에 실패했습니다.");
+      }
+    } catch (err) {
+      setAiError(`저장 중 오류: ${err.message}`);
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   // 입장 코드 검증 (sws@2129)
@@ -606,6 +762,7 @@ export default function App() {
     fetchOverviewAndBots(true);
     fetchTrades(selectedBotId);
     fetchStatistics();
+    fetchAiBriefing();
 
     const timer = setInterval(() => {
       fetchUpbitStatus();
@@ -1088,6 +1245,290 @@ export default function App() {
                   </span>
                 </div>
               </div>
+            </div>
+
+            {/* AI 실시간 시장 분석 및 봇 진단 카드 (Gemini 1.5 Flash) */}
+            <div
+              className="card"
+              style={{
+                marginBottom: "18px",
+                background: "linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.85) 100%)",
+                border: "1px solid rgba(99, 102, 241, 0.3)",
+                boxShadow: "0 8px 24px -4px rgba(99, 102, 241, 0.12)",
+                borderRadius: "12px",
+                padding: "18px 20px",
+              }}
+            >
+              {/* 상단 헤더: 타이틀 + 뱃지 + 액션 버튼 */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "12px",
+                  borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+                  paddingBottom: "12px",
+                  marginBottom: "14px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: "32px",
+                      height: "32px",
+                      borderRadius: "8px",
+                      background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
+                      fontSize: "16px",
+                    }}
+                  >
+                    🤖
+                  </div>
+                  <div>
+                    <span style={{ fontSize: "16px", fontWeight: 700, color: "#f8fafc" }}>
+                      AI 실시간 시장 분석 & 봇 진단
+                    </span>
+                    <span
+                      style={{
+                        marginLeft: "8px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        padding: "2px 8px",
+                        borderRadius: "12px",
+                        background: "rgba(99, 102, 241, 0.2)",
+                        color: "#a5b4fc",
+                        border: "1px solid rgba(99, 102, 241, 0.4)",
+                      }}
+                    >
+                      Gemini 1.5 Flash
+                    </span>
+                  </div>
+                  {aiBriefing?.latest && (
+                    <span style={{ fontSize: "12px", color: "#94a3b8" }}>
+                      (분석 시각: {aiBriefing.latest.created_at})
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{
+                      background: "linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)",
+                      color: "#fff",
+                      border: "none",
+                      padding: "7px 16px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      borderRadius: "8px",
+                      cursor: aiLoading ? "not-allowed" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)",
+                    }}
+                    onClick={triggerAiAnalysis}
+                    disabled={aiLoading}
+                  >
+                    {aiLoading ? "Gemini 심층 분석 중..." : "⚡ AI 시황 분석 요청"}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{
+                      padding: "7px 12px",
+                      fontSize: "12.5px",
+                      background: "rgba(51, 65, 85, 0.6)",
+                      border: "1px solid rgba(148, 163, 184, 0.2)",
+                    }}
+                    onClick={() => setShowAiKeyConfig((prev) => !prev)}
+                  >
+                    ⚙️ {aiBriefing?.has_key ? "API 키 설정됨" : "API 키 등록"}
+                  </button>
+                </div>
+              </div>
+
+              {/* API 키 설정 패널 (접힘/펼침) */}
+              {showAiKeyConfig && (
+                <div
+                  style={{
+                    background: "rgba(15, 23, 42, 0.6)",
+                    border: "1px solid rgba(148, 163, 184, 0.15)",
+                    borderRadius: "8px",
+                    padding: "14px 16px",
+                    marginBottom: "14px",
+                  }}
+                >
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#f8fafc", marginBottom: "6px" }}>
+                    Google Gemini API 키 설정 (Method A)
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "10px", lineHeight: "1.5" }}>
+                    Google AI Studio에서 발급받으신 Gemini API 키를 입력하세요. 저장을 누르시면 프로젝트 내{" "}
+                    <code style={{ color: "#38bdf8" }}>config/upbit_config.json</code>의{" "}
+                    <code style={{ color: "#38bdf8" }}>gemini_api_key</code> 항목에 안전하게 저장됩니다.
+                    {aiBriefing?.has_key && (
+                      <span style={{ color: "#4ade80", marginLeft: "6px", fontWeight: 600 }}>
+                        (현재 등록된 키: {aiBriefing.masked_key})
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", maxWidth: "600px" }}>
+                    <input
+                      type="password"
+                      placeholder="AIzaSy로 시작하는 Gemini API Key 입력..."
+                      value={aiKeyInput}
+                      onChange={(e) => setAiKeyInput(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: "7px 12px",
+                        fontSize: "13px",
+                        background: "#0f172a",
+                        border: "1px solid rgba(148, 163, 184, 0.3)",
+                        borderRadius: "6px",
+                        color: "#fff",
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ padding: "7px 16px", fontSize: "13px" }}
+                      onClick={handleSaveAiKey}
+                    >
+                      저장
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ padding: "7px 12px", fontSize: "13px" }}
+                      onClick={() => setShowAiKeyConfig(false)}
+                    >
+                      닫기
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 에러 메시지 알림 */}
+              {aiError && (
+                <div
+                  style={{
+                    fontSize: "12.5px",
+                    color: "#f87171",
+                    background: "rgba(239, 68, 68, 0.12)",
+                    border: "1px solid rgba(239, 68, 68, 0.3)",
+                    borderRadius: "8px",
+                    padding: "10px 14px",
+                    marginBottom: "14px",
+                    lineHeight: "1.5",
+                  }}
+                >
+                  ⚠️ {aiError}
+                </div>
+              )}
+
+              {/* 아직 API 키가 없고 분석 기록도 없을 때의 안내 */}
+              {!aiBriefing?.has_key && !aiBriefing?.latest && !aiLoading && (
+                <div
+                  style={{
+                    padding: "20px",
+                    textAlign: "center",
+                    background: "rgba(15, 23, 42, 0.4)",
+                    borderRadius: "8px",
+                    border: "1px dashed rgba(99, 102, 241, 0.3)",
+                  }}
+                >
+                  <div style={{ fontSize: "24px", marginBottom: "8px" }}>💡</div>
+                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#f8fafc", marginBottom: "4px" }}>
+                    Gemini API 키를 등록하고 AI 마켓 브리핑을 시작하세요
+                  </div>
+                  <div style={{ fontSize: "12.5px", color: "#94a3b8", maxWidth: "600px", margin: "0 auto 14px", lineHeight: "1.5" }}>
+                    비트코인 일봉 20MA, 4시간 60MA 수급 현황과 3개 자동매매 봇들의 진입/대기 이유를 Gemini 1.5 Flash가 실시간으로 분석해 드립니다.
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ padding: "6px 16px", fontSize: "13px" }}
+                    onClick={() => setShowAiKeyConfig(true)}
+                  >
+                    Gemini API 키 등록하기
+                  </button>
+                </div>
+              )}
+
+              {/* 로딩 인디케이터 */}
+              {aiLoading && (
+                <div
+                  style={{
+                    padding: "28px 20px",
+                    textAlign: "center",
+                    background: "rgba(15, 23, 42, 0.4)",
+                    borderRadius: "8px",
+                  }}
+                >
+                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#f8fafc", marginBottom: "6px" }}>
+                    ⚡ 업비트 실시간 호가 & 봇 지표를 종합 분석 중입니다...
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                    비트코인 이평선 이격도, 변동성 지표, 3개 봇 포지션을 취합하여 Gemini 1.5 Flash로 맞춤형 브리핑을 작성하고 있습니다.
+                  </div>
+                </div>
+              )}
+
+              {/* 분석 결과 리포트 표시 */}
+              {!aiLoading && aiBriefing?.latest && (
+                <div>
+                  {/* 주요 지표 요약 바 */}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "12px",
+                      marginBottom: "14px",
+                      padding: "10px 14px",
+                      background: "rgba(15, 23, 42, 0.5)",
+                      borderRadius: "8px",
+                      border: "1px solid rgba(255, 255, 255, 0.05)",
+                    }}
+                  >
+                    <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                      🪙 <strong style={{ color: "#f8fafc" }}>BTC 현재가:</strong>{" "}
+                      {aiBriefing.latest.btc_price ? Number(aiBriefing.latest.btc_price).toLocaleString("ko-KR") + "원" : "-"}
+                    </div>
+                    <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                      📈 <strong style={{ color: "#f8fafc" }}>일봉 20MA:</strong>{" "}
+                      {aiBriefing.latest.btc_daily_20ma ? Math.floor(Number(aiBriefing.latest.btc_daily_20ma)).toLocaleString("ko-KR") + "원" : "-"}
+                    </div>
+                    <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                      ⏱️ <strong style={{ color: "#f8fafc" }}>4시간 60MA:</strong>{" "}
+                      {aiBriefing.latest.btc_4h_60ma ? Math.floor(Number(aiBriefing.latest.btc_4h_60ma)).toLocaleString("ko-KR") + "원" : "-"}
+                    </div>
+                    <div style={{ fontSize: "12.5px" }}>
+                      {aiBriefing.latest.regime_status === "HOLD_CASH" ? (
+                        <span style={{ color: "#f87171", fontWeight: 700 }}>🔴 시장체제: 신규매수차단 (현금보유)</span>
+                      ) : (
+                        <span style={{ color: "#4ade80", fontWeight: 700 }}>🟢 시장체제: 정상거래 허용 (상승추세)</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 마크다운 텍스트 뷰어 */}
+                  <div
+                    style={{
+                      background: "rgba(15, 23, 42, 0.4)",
+                      borderRadius: "8px",
+                      padding: "16px 20px",
+                      border: "1px solid rgba(255, 255, 255, 0.04)",
+                    }}
+                  >
+                    <MarkdownViewer content={aiBriefing.latest.briefing_text} />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* 봇별 탭 구분 (요구사항 9, 15: 봇 별명 표기) */}
