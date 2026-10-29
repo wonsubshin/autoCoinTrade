@@ -2,23 +2,14 @@
 chcp 65001 >nul
 title Upbit AutoCoinTrade Services Launcher
 
-cd /d "%~dp0\.."
-
-set "NODE_EXE=D:\dev\tools\nodejs\node.exe"
-if not exist "%NODE_EXE%" (
-    set "NODE_EXE=node"
-)
-
-if not exist "logs" mkdir "logs"
-
+echo ===================================================
 echo [Upbit AutoTrade] 서비스 시작 중...
+echo ===================================================
 
-:: 1) 백엔드 서버 기동 (Port 8001)
-echo [1/2] 백엔드 거래 엔진 (Port 8001) 시작...
-start "UpbitAutoTrade-Backend" /min cmd /c ""%NODE_EXE%" backend/node_server.mjs >> logs\backend.log 2>&1"
+wscript.exe "%~dp0start_silent.vbs"
 
-:: 2) 프론트엔드 웹 UI 기동 (Port 5173)
-echo [2/2] 프론트엔드 웹 UI (Port 5173) 시작...
-start "UpbitAutoTrade-Frontend" /min cmd /c ""%NODE_EXE%" frontend/node_modules/vite/bin/vite.js frontend --port 5173 --host >> logs\frontend.log 2>&1"
-
-echo [Upbit AutoTrade] 시작 완료 (http://localhost:5173)
+echo.
+echo [안내] 백엔드(Port 8001) 및 웹 UI(Port 9000)가 백그라운드에서 실행되었습니다.
+echo [접속 주소] http://localhost:9000
+echo.
+ping 127.0.0.1 -n 3 >nul

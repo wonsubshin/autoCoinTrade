@@ -1,8 +1,8 @@
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
-projectDir = fso.GetParentFolderName(scriptDir)
+q = Chr(34)
 
-batPath = scriptDir & "\start_services.bat"
-WshShell.CurrentDirectory = projectDir
-WshShell.Run """" & batPath & """", 0, False
+WshShell.Run "cmd.exe /c " & q & scriptDir & "\run_backend.bat" & q, 0, False
+WScript.Sleep 500
+WshShell.Run "cmd.exe /c " & q & scriptDir & "\run_frontend.bat" & q, 0, False

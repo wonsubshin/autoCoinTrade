@@ -23,3 +23,4 @@ if (Test-Path $shortcutPath) {
 } else {
     Write-Host "[오류] 바로가기 등록 실패. 권한을 확인해주세요." -ForegroundColor Red
 }
+
