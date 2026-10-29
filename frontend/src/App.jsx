@@ -170,7 +170,8 @@ function ProfitLineChart({ series, periodLabel }) {
   const values = series.map((d) => Number(d.cumulative_profit || 0));
   const minVal = Math.min(0, ...values);
   const maxVal = Math.max(0, ...values);
-  const range = maxVal - minVal === 0 ? 100000 : maxVal - minVal;
+  const isAllZero = maxVal === 0 && minVal === 0;
+  const range = isAllZero ? 1 : maxVal - minVal;
 
   const plotW = width - padLeft - padRight;
   const plotH = height - padTop - padBottom;
@@ -180,13 +181,18 @@ function ProfitLineChart({ series, periodLabel }) {
       series.length === 1
         ? padLeft + plotW / 2
         : padLeft + (idx / (series.length - 1)) * plotW;
-    const y =
-      padTop + plotH - ((Number(item.cumulative_profit || 0) - minVal) / range) * plotH;
+    const y = isAllZero
+      ? padTop + plotH / 2
+      : padTop + plotH - ((Number(item.cumulative_profit || 0) - minVal) / range) * plotH;
     return { x, y, ...item };
   });
 
   const polylinePoints = points.map((p) => `${p.x},${p.y}`).join(" ");
-  const zeroY = padTop + plotH - ((0 - minVal) / range) * plotH;
+  const zeroY = isAllZero
+    ? padTop + plotH / 2
+    : padTop + plotH - ((0 - minVal) / range) * plotH;
+  const showMaxLabel = maxVal > 0 && Math.abs(zeroY - padTop) >= 18;
+  const showMinLabel = minVal < 0 && Math.abs(padTop + plotH - zeroY) >= 18;
 
   return (
     <div style={{ width: "100%", overflowX: "auto" }}>
@@ -204,15 +210,37 @@ function ProfitLineChart({ series, periodLabel }) {
           strokeDasharray="4 4"
           strokeWidth="1"
         />
-        <text x={10} y={zeroY + 4} fill="#94a3b8" fontSize="11">
+        <text
+          x={padLeft - 12}
+          y={zeroY + 4}
+          textAnchor="end"
+          fill="#94a3b8"
+          fontSize="11"
+        >
           0원
         </text>
-        <text x={10} y={padTop + 8} fill="#94a3b8" fontSize="11">
-          {Math.floor(maxVal).toLocaleString()}원
-        </text>
-        <text x={10} y={padTop + plotH} fill="#94a3b8" fontSize="11">
-          {Math.floor(minVal).toLocaleString()}원
-        </text>
+        {showMaxLabel && (
+          <text
+            x={padLeft - 12}
+            y={padTop + 4}
+            textAnchor="end"
+            fill="#94a3b8"
+            fontSize="11"
+          >
+            +{Math.floor(maxVal).toLocaleString()}원
+          </text>
+        )}
+        {showMinLabel && (
+          <text
+            x={padLeft - 12}
+            y={padTop + plotH + 4}
+            textAnchor="end"
+            fill="#94a3b8"
+            fontSize="11"
+          >
+            {Math.floor(minVal).toLocaleString()}원
+          </text>
+        )}
 
         {/* 선 그래프 */}
         <polyline
