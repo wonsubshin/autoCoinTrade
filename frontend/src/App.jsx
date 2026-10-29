@@ -27,6 +27,115 @@ function parseNumericInput(val) {
   return Number.isNaN(num) ? "" : Math.floor(num);
 }
 
+function computeAllocationPreview(rawTotalCapital, botsList, ratiosMap) {
+  const flooredTotal = Math.max(0, Math.floor(Number(rawTotalCapital || 0)));
+  const items = (botsList || []).map((b) => {
+    const used = Math.floor(
+      Number(
+        b.used_capital !== undefined
+          ? b.used_capital
+          : (b.open_positions || []).reduce((acc, p) => acc + Number(p.buy_amount || 0), 0)
+      )
+    );
+    const ratio = Math.max(
+      0,
+      Number(ratiosMap && ratiosMap[b.bot_id] !== undefined ? ratiosMap[b.bot_id] || 0 : b.allocation_ratio || 0)
+    );
+    return {
+      bot_id: b.bot_id,
+      used,
+      ratio,
+      allocated: 0,
+      virtual_krw: 0,
+      locked: false,
+    };
+  });
+
+  const totalUsed = items.reduce((acc, it) => acc + it.used, 0);
+  if (flooredTotal <= 0) {
+    const byBot = {};
+    for (const it of items) {
+      byBot[it.bot_id] = { used: it.used, allocated: 0, virtual_krw: 0, ratio: it.ratio };
+    }
+    return { flooredTotal: 0, totalUsed, totalAllocated: 0, totalVirtual: 0, byBot };
+  }
+
+  const totalRatio = Number(items.reduce((acc, it) => acc + it.ratio, 0).toFixed(4));
+  const targetPool =
+    totalRatio >= 99.99
+      ? flooredTotal
+      : Math.max(totalUsed, Math.floor(flooredTotal * (totalRatio / 100.0)));
+
+  while (true) {
+    const unlocked = items.filter((it) => !it.locked);
+    if (unlocked.length === 0) break;
+
+    const lockedAllocatedSum = items
+      .filter((it) => it.locked)
+      .reduce((acc, it) => acc + it.allocated, 0);
+    const remainingPool = Math.max(0, targetPool - lockedAllocatedSum);
+    const unlockedRatioSum = unlocked.reduce((acc, it) => acc + it.ratio, 0);
+
+    let anyNewlyLocked = false;
+    for (const it of unlocked) {
+      const share =
+        unlockedRatioSum > 0
+          ? Math.floor((remainingPool * it.ratio) / unlockedRatioSum)
+          : Math.floor(remainingPool / unlocked.length);
+      if (it.used > share) {
+        it.allocated = it.used;
+        it.virtual_krw = 0;
+        it.locked = true;
+        anyNewlyLocked = true;
+      }
+    }
+
+    if (!anyNewlyLocked) {
+      let distributed = 0;
+      for (const it of unlocked) {
+        const share =
+          unlockedRatioSum > 0
+            ? Math.floor((remainingPool * it.ratio) / unlockedRatioSum)
+            : 0;
+        it.allocated = share;
+        distributed += share;
+      }
+      const remainder = remainingPool - distributed;
+      if (remainder > 0 && unlockedRatioSum > 0) {
+        const candidates = [...unlocked]
+          .filter((it) => it.ratio > 0)
+          .sort((a, b) => b.ratio - a.ratio);
+        if (candidates.length > 0) {
+          candidates[0].allocated += remainder;
+        }
+      }
+      for (const it of unlocked) {
+        it.virtual_krw = Math.max(0, it.allocated - it.used);
+        it.locked = true;
+      }
+      break;
+    }
+  }
+
+  const byBot = {};
+  for (const it of items) {
+    byBot[it.bot_id] = {
+      used: it.used,
+      allocated: it.allocated,
+      virtual_krw: it.virtual_krw,
+      ratio: it.ratio,
+    };
+  }
+
+  return {
+    flooredTotal,
+    totalUsed,
+    totalAllocated: items.reduce((acc, it) => acc + it.allocated, 0),
+    totalVirtual: items.reduce((acc, it) => acc + it.virtual_krw, 0),
+    byBot,
+  };
+}
+
 function renderColoredProfit(val) {
   const num = Number(val || 0);
   if (num > 0) {
@@ -596,6 +705,18 @@ export default function App() {
         `입력한 전체 운용 원금(${numericCapital.toLocaleString("ko-KR")}원)이 업비트 총 보유 자산(${maxAssetLimit.toLocaleString(
           "ko-KR"
         )}원)의 한도를 초과합니다.\n전체 운용 원금은 총 보유 자산 이하로만 저장할 수 있습니다.`,
+        "danger"
+      );
+      return;
+    }
+
+    const previewPlan = computeAllocationPreview(numericCapital, bots, ratioInputs);
+    if (numericCapital > 0 && numericCapital < previewPlan.totalUsed) {
+      showModal(
+        "운용 원금 설정 오류 — 이미 사용된 투자금 미달",
+        `입력한 전체 운용 원금(${numericCapital.toLocaleString("ko-KR")}원)이 현재 이미 매수에 사용된 투자금(${previewPlan.totalUsed.toLocaleString(
+          "ko-KR"
+        )}원)보다 적습니다.\n최소 ${previewPlan.totalUsed.toLocaleString("ko-KR")}원 이상으로 설정해주세요.`,
         "danger"
       );
       return;
@@ -1376,83 +1497,153 @@ export default function App() {
               <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>
                 1. 전체 운용 원금 및 봇별 자금 분배 비율 설정 (소수점 이하 버림 적용)
               </h3>
-              <form onSubmit={handleSaveAllocation}>
-                <div className="form-row" style={{ marginBottom: "18px" }}>
-                  <label>
-                    전체 운용 원금 (KRW) — 설정 금액:{" "}
-                    <strong
+              {(() => {
+                const allocPlan = computeAllocationPreview(
+                  parseNumericInput(totalCapitalInput),
+                  bots,
+                  ratioInputs
+                );
+                return (
+                  <form onSubmit={handleSaveAllocation}>
+                    <div className="form-row" style={{ marginBottom: "14px" }}>
+                      <label>
+                        전체 운용 원금 (KRW) — 설정 금액:{" "}
+                        <strong
+                          style={{
+                            color:
+                              (upbitAccount.success &&
+                                upbitAccount.total_asset_krw !== null &&
+                                allocPlan.flooredTotal > Number(upbitAccount.total_asset_krw)) ||
+                              (allocPlan.flooredTotal > 0 && allocPlan.flooredTotal < allocPlan.totalUsed)
+                                ? "#ef4444"
+                                : "#4ade80",
+                          }}
+                        >
+                          {formatWithCommas(totalCapitalInput)
+                            ? `${formatWithCommas(totalCapitalInput)}원`
+                            : "미설정"}
+                        </strong>{" "}
+                        (총 보유 자산 한도 이하만 저장 가능 / 0 이하 입력 시 전체 봇 거래 중지)
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        className="form-input"
+                        placeholder="운용 원금을 입력하세요 (총 보유 자산 한도 이하)"
+                        value={formatWithCommas(totalCapitalInput)}
+                        onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
+                      />
+                      {upbitAccount.success &&
+                        upbitAccount.total_asset_krw !== null &&
+                        allocPlan.flooredTotal > Number(upbitAccount.total_asset_krw) && (
+                          <div style={{ fontSize: "12px", color: "#f87171", marginTop: "4px", fontWeight: 600 }}>
+                            ⚠️ 입력한 금액이 업비트 총 보유 자산 한도(
+                            {Number(upbitAccount.total_asset_krw).toLocaleString("ko-KR")}원)를 초과하여 저장할 수 없습니다.
+                          </div>
+                        )}
+                      {allocPlan.flooredTotal > 0 && allocPlan.flooredTotal < allocPlan.totalUsed && (
+                        <div style={{ fontSize: "12px", color: "#f87171", marginTop: "4px", fontWeight: 600 }}>
+                          ⚠️ 입력한 금액이 현재 이미 사용된 투자금(
+                          {allocPlan.totalUsed.toLocaleString("ko-KR")}원)보다 적어 저장할 수 없습니다.
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 투자금 총액 vs 이미 사용된 투자금 + 봇별 가용 잔고 일치 요약 */}
+                    <div
                       style={{
-                        color:
-                          upbitAccount.success &&
-                          upbitAccount.total_asset_krw !== null &&
-                          parseNumericInput(totalCapitalInput) > Number(upbitAccount.total_asset_krw)
-                            ? "#ef4444"
-                            : "#4ade80",
+                        background: "#0f172a",
+                        border: "1px solid #334155",
+                        borderRadius: "10px",
+                        padding: "12px 14px",
+                        marginBottom: "18px",
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                        gap: "12px",
+                        fontSize: "12.5px",
                       }}
                     >
-                      {formatWithCommas(totalCapitalInput)
-                        ? `${formatWithCommas(totalCapitalInput)}원`
-                        : "미설정"}
-                    </strong>{" "}
-                    (총 보유 자산 한도 이하만 저장 가능 / 0 이하 입력 시 전체 봇 거래 중지)
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    className="form-input"
-                    placeholder="운용 원금을 입력하세요 (총 보유 자산 한도 이하)"
-                    value={formatWithCommas(totalCapitalInput)}
-                    onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
-                  />
-                  {upbitAccount.success &&
-                    upbitAccount.total_asset_krw !== null &&
-                    parseNumericInput(totalCapitalInput) > Number(upbitAccount.total_asset_krw) && (
-                      <div style={{ fontSize: "12px", color: "#f87171", marginTop: "4px", fontWeight: 600 }}>
-                        ⚠️ 입력한 금액이 업비트 총 보유 자산 한도(
-                        {Number(upbitAccount.total_asset_krw).toLocaleString("ko-KR")}원)를 초과하여 저장할 수 없습니다.
+                      <div>
+                        <div style={{ color: "#94a3b8", marginBottom: "2px" }}>전체 투자금 총액</div>
+                        <div style={{ fontWeight: 700, fontSize: "14px", color: "#f8fafc" }}>
+                          {allocPlan.flooredTotal.toLocaleString("ko-KR")}원
+                        </div>
                       </div>
-                    )}
-                </div>
+                      <div>
+                        <div style={{ color: "#94a3b8", marginBottom: "2px" }}>이미 사용된 투자금 합계</div>
+                        <div style={{ fontWeight: 700, fontSize: "14px", color: "#fbbf24" }}>
+                          {allocPlan.totalUsed.toLocaleString("ko-KR")}원
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ color: "#94a3b8", marginBottom: "2px" }}>잔여/추가 가용 분배금 합계</div>
+                        <div style={{ fontWeight: 700, fontSize: "14px", color: "#38bdf8" }}>
+                          {allocPlan.totalVirtual.toLocaleString("ko-KR")}원
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ color: "#94a3b8", marginBottom: "2px" }}>각 봇별 배정 원금 총합</div>
+                        <div
+                          style={{
+                            fontWeight: 700,
+                            fontSize: "14px",
+                            color:
+                              allocPlan.totalAllocated === allocPlan.flooredTotal ? "#4ade80" : "#f87171",
+                          }}
+                        >
+                          {allocPlan.totalAllocated.toLocaleString("ko-KR")}원{" "}
+                          {allocPlan.totalAllocated === allocPlan.flooredTotal && allocPlan.flooredTotal > 0
+                            ? "(총액 일치 ✓)"
+                            : ""}
+                        </div>
+                      </div>
+                    </div>
 
-                <div className="settings-grid">
-                  {bots.map((b) => {
-                    const rawRatio = ratioInputs[b.bot_id];
-                    const ratioVal = Number(rawRatio || 0);
-                    const previewAllocated = Math.floor(
-                      Math.floor(Number(parseNumericInput(totalCapitalInput) || 0)) *
-                        (ratioVal / 100.0)
-                    );
-                    return (
-                      <div className="form-row" key={b.bot_id}>
-                        <label>
-                          [{b.nickname || b.name}] 분배 비율 (%) → 배정 원금(버림):{" "}
-                          <strong style={{ color: "#a5b4fc" }}>
-                            {previewAllocated.toLocaleString("ko-KR")}원
-                          </strong>
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="100"
-                          className="form-input"
-                          placeholder="분배 비율(%) 입력"
-                          value={rawRatio ?? ""}
-                          onChange={(e) =>
-                            setRatioInputs((prev) => ({
-                              ...prev,
-                              [b.bot_id]: e.target.value === "" ? "" : Number(e.target.value),
-                            }))
-                          }
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-                <button type="submit" className="btn btn-primary" style={{ marginTop: "8px" }}>
-                  자금 분배 비율 저장 (소수점 버림 적용)
-                </button>
-              </form>
+                    <div className="settings-grid">
+                      {bots.map((b) => {
+                        const rawRatio = ratioInputs[b.bot_id];
+                        const botPreview = allocPlan.byBot[b.bot_id] || {
+                          used: 0,
+                          allocated: 0,
+                          virtual_krw: 0,
+                        };
+                        return (
+                          <div className="form-row" key={b.bot_id}>
+                            <label>
+                              [{b.nickname || b.name}] 분배 비율 (%) → 배정 원금:{" "}
+                              <strong style={{ color: "#a5b4fc" }}>
+                                {botPreview.allocated.toLocaleString("ko-KR")}원
+                              </strong>
+                            </label>
+                            <div style={{ fontSize: "11.5px", color: "#94a3b8", marginBottom: "4px" }}>
+                              이미 사용: <strong style={{ color: "#fbbf24" }}>{botPreview.used.toLocaleString("ko-KR")}원</strong>{" "}
+                              + 가용 잔고: <strong style={{ color: "#4ade80" }}>{botPreview.virtual_krw.toLocaleString("ko-KR")}원</strong>
+                            </div>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              max="100"
+                              className="form-input"
+                              placeholder="분배 비율(%) 입력"
+                              value={rawRatio ?? ""}
+                              onChange={(e) =>
+                                setRatioInputs((prev) => ({
+                                  ...prev,
+                                  [b.bot_id]: e.target.value === "" ? "" : Number(e.target.value),
+                                }))
+                              }
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button type="submit" className="btn btn-primary" style={{ marginTop: "8px" }}>
+                      자금 분배 비율 저장 (소수점 버림 적용)
+                    </button>
+                  </form>
+                );
+              })()}
             </div>
 
             {/* 요구사항 15: 봇 수정 및 각 봇별 별명(Nickname) 설정 */}

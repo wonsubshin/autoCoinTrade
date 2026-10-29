@@ -298,8 +298,119 @@ function getBots() {
     const openPositions = db
       .prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND status = 'OPEN' ORDER BY id DESC")
       .all(r.bot_id);
-    return { ...r, config, open_positions: openPositions };
+    const usedCapital = Math.floor(
+      openPositions.reduce((acc, p) => acc + Number(p.buy_amount || 0), 0)
+    );
+    return { ...r, config, open_positions: openPositions, used_capital: usedCapital };
   });
+}
+
+function recalculateAndApplyBotAllocations(flooredTotal, ratiosMap = null) {
+  const db = getDb();
+  const now = nowKSTString();
+  const bots = getBots();
+  const items = bots.map((b) => {
+    const used = Math.floor(Number(b.used_capital || 0));
+    const ratio = Math.max(
+      0,
+      Number(ratiosMap && ratiosMap[b.bot_id] !== undefined ? ratiosMap[b.bot_id] : b.allocation_ratio || 0)
+    );
+    const pnlRow = db
+      .prepare("SELECT COALESCE(SUM(profit_krw), 0) AS total_pnl FROM trades WHERE bot_id = ? AND status = 'COMPLETED'")
+      .get(b.bot_id);
+    const realizedPnl = Math.floor(Number(pnlRow?.total_pnl || 0));
+    return {
+      bot_id: b.bot_id,
+      used,
+      ratio,
+      realizedPnl,
+      allocated: 0,
+      virtual_krw: 0,
+      locked: false,
+    };
+  });
+
+  const totalUsed = items.reduce((acc, it) => acc + it.used, 0);
+
+  if (flooredTotal <= 0) {
+    for (const it of items) {
+      db.prepare(
+        "UPDATE bots SET allocation_ratio = ?, allocated_capital = 0, virtual_krw = 0, updated_at = ? WHERE bot_id = ?"
+      ).run(it.ratio, now, it.bot_id);
+    }
+    return { totalUsed, totalAllocated: 0, totalVirtual: 0 };
+  }
+
+  const totalRatio = Number(items.reduce((acc, it) => acc + it.ratio, 0).toFixed(4));
+  const targetPool =
+    totalRatio >= 99.99
+      ? flooredTotal
+      : Math.max(totalUsed, Math.floor(flooredTotal * (totalRatio / 100.0)));
+
+  // 이미 사용된 투자금(used)을 우선 반영하고, 잔여(신규 투입 포함) 투자금을 비율대로 분배하여
+  // 전체 투자금 총액과 각 봇별 배정 원금(이미 사용 + 가용 잔고)의 합계가 정확히 일치하도록 계산
+  while (true) {
+    const unlocked = items.filter((it) => !it.locked);
+    if (unlocked.length === 0) break;
+
+    const lockedAllocatedSum = items
+      .filter((it) => it.locked)
+      .reduce((acc, it) => acc + it.allocated, 0);
+    const remainingPool = Math.max(0, targetPool - lockedAllocatedSum);
+    const unlockedRatioSum = unlocked.reduce((acc, it) => acc + it.ratio, 0);
+
+    let anyNewlyLocked = false;
+    for (const it of unlocked) {
+      const share =
+        unlockedRatioSum > 0
+          ? Math.floor((remainingPool * it.ratio) / unlockedRatioSum)
+          : Math.floor(remainingPool / unlocked.length);
+      if (it.used > share) {
+        it.allocated = it.used;
+        it.virtual_krw = 0;
+        it.locked = true;
+        anyNewlyLocked = true;
+      }
+    }
+
+    if (!anyNewlyLocked) {
+      let distributed = 0;
+      for (const it of unlocked) {
+        const share =
+          unlockedRatioSum > 0
+            ? Math.floor((remainingPool * it.ratio) / unlockedRatioSum)
+            : 0;
+        it.allocated = share;
+        distributed += share;
+      }
+      const remainder = remainingPool - distributed;
+      if (remainder > 0 && unlockedRatioSum > 0) {
+        const candidates = [...unlocked]
+          .filter((it) => it.ratio > 0)
+          .sort((a, b) => b.ratio - a.ratio);
+        if (candidates.length > 0) {
+          candidates[0].allocated += remainder;
+        }
+      }
+      for (const it of unlocked) {
+        it.virtual_krw = Math.max(0, it.allocated - it.used);
+        it.locked = true;
+      }
+      break;
+    }
+  }
+
+  for (const it of items) {
+    db.prepare(
+      "UPDATE bots SET allocation_ratio = ?, allocated_capital = ?, virtual_krw = ?, updated_at = ? WHERE bot_id = ?"
+    ).run(it.ratio, it.allocated, it.virtual_krw, now, it.bot_id);
+  }
+
+  return {
+    totalUsed,
+    totalAllocated: items.reduce((acc, it) => acc + it.allocated, 0),
+    totalVirtual: items.reduce((acc, it) => acc + it.virtual_krw, 0),
+  };
 }
 
 function checkAndHaltIfZeroBalance() {
@@ -899,6 +1010,13 @@ const server = http.createServer(async (req, res) => {
         });
       }
       const flooredTotal = Math.floor(Number(body.total_capital || 0));
+      const totalUsed = getBots().reduce((acc, b) => acc + Math.floor(Number(b.used_capital || 0)), 0);
+      if (flooredTotal > 0 && flooredTotal < totalUsed) {
+        return sendJson(res, 400, {
+          success: false,
+          detail: `설정하려는 전체 운용 원금(${flooredTotal.toLocaleString("ko-KR")}원)이 현재 이미 매수에 사용된 투자금(${totalUsed.toLocaleString("ko-KR")}원)보다 적습니다. 최소 ${totalUsed.toLocaleString("ko-KR")}원 이상으로 설정해주세요.`,
+        });
+      }
       const accountInfo = await fetchUpbitAccountBalance();
       const maxAssetLimit = Number(accountInfo.total_asset_krw ?? accountInfo.krw_balance ?? 0);
       if (!accountInfo.success || accountInfo.total_asset_krw === null) {
@@ -922,18 +1040,7 @@ const server = http.createServer(async (req, res) => {
         now
       );
 
-      for (const [botId, ratio] of Object.entries(ratios)) {
-        const rVal = Number(ratio);
-        const allocated = Math.floor(flooredTotal * (rVal / 100.0));
-        const invRow = db
-          .prepare("SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'")
-          .get(botId);
-        const invested = Number(invRow?.invested || 0);
-        const newVirtual = flooredTotal > 0 ? Math.max(0, allocated - invested) : 0;
-        db.prepare(
-          "UPDATE bots SET allocation_ratio = ?, allocated_capital = ?, virtual_krw = ?, updated_at = ? WHERE bot_id = ?"
-        ).run(rVal, allocated, newVirtual, now, botId);
-      }
+      recalculateAndApplyBotAllocations(flooredTotal, ratios);
 
       if (flooredTotal > 0) {
         db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('zero_balance_halted', '0', ?)").run(now);
@@ -1460,24 +1567,11 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
     `).run(sellUuid, sellPrice, p.volume, posSellAmount, now, posProfitKrw, posProfitPct, p.trade_id, bot.bot_id);
   }
 
-  // 매도 후 가용 잔고(virtual_krw) 정합성 보정:
-  // 초과 매수분이 청산되더라도 virtual_krw가 (할당 원금 + 누적 실현손익 - 잔여 OPEN 투자금)을 초과하지 않도록 자동 정상화
-  const latestBot = getBots().find((b) => b.bot_id === bot.bot_id);
-  const allocatedCap = Math.floor(Number(latestBot?.allocated_capital || 0));
-  const openInvRow = db
-    .prepare(
-      "SELECT COALESCE(SUM(buy_amount + COALESCE(buy_fee, 0)), 0) AS open_inv FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'"
-    )
-    .get(bot.bot_id);
-  const pnlRow = db
-    .prepare("SELECT COALESCE(SUM(profit_krw), 0) AS total_pnl FROM trades WHERE bot_id = ? AND status = 'COMPLETED'")
-    .get(bot.bot_id);
-  const openInv = Number(openInvRow?.open_inv || 0);
-  const totalPnl = Number(pnlRow?.total_pnl || 0);
-  const newVirtual = Math.max(0, Math.floor(allocatedCap + totalPnl - openInv));
+  // 매도 후 전체 운용 원금 대비 이미 사용된 투자금을 재계산하여 봇별 배정 원금 및 가용 잔고(virtual_krw) 재분배
+  const currentTotalCap = Math.floor(Number(getSetting("total_capital", "0")));
+  recalculateAndApplyBotAllocations(currentTotalCap);
 
-  db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-    newVirtual,
+  db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
     `${currentPos.market} ${reasonLabel} 매도 완료 (${targetPositions.length}건 통합 / ${
       totalProfitKrw >= 0 ? "+" : ""
     }${totalProfitKrw.toLocaleString("ko-KR")}원)`,
@@ -1760,6 +1854,11 @@ async function reconcileOpenPositionsWithUpbit() {
         }
       }
     } catch {}
+  }
+
+  if (getSetting("capital_configured", "0") === "1") {
+    const currentTotalCap = Math.floor(Number(getSetting("total_capital", "0")));
+    recalculateAndApplyBotAllocations(currentTotalCap);
   }
 }
 
