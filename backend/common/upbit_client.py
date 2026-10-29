@@ -466,6 +466,139 @@ class UpbitOpenAPIClient:
         return df
 
     # ------------------------------------------------------------------
+    # 손실 방어 패치 1: 전체 봇 공통 시장 체제 필터 (BTC Regime Filter)
+    # ------------------------------------------------------------------
+    def check_btc_regime_filter(self) -> Dict[str, Any]:
+        """
+        대장주 비트코인(KRW-BTC)의 현재가가 일봉 20일 이동평균선(MA20) 또는
+        4시간봉 60 이동평균선(MA60) 아래에 있으면 신규 매수를 전면 중단(Hold Cash)합니다.
+        """
+        try:
+            df_days = self.get_candles(market="KRW-BTC", unit="days", count=20)
+            df_4h = self.get_candles(market="KRW-BTC", unit="minutes/240", count=60)
+            if len(df_days) < 20 or len(df_4h) < 20:
+                return {
+                    "allow_buy": True,
+                    "btc_price": 0.0,
+                    "ma20_day": 0.0,
+                    "ma60_4h": 0.0,
+                    "reason": "BTC 이평선 데이터 수집 중",
+                }
+
+            btc_price = float(df_days.iloc[-1]["trade_price"])
+            ma20_day = float(df_days["trade_price"].astype(float).tail(20).mean())
+            ma60_4h = float(df_4h["trade_price"].astype(float).tail(60).mean())
+
+            below_ma20_day = btc_price < ma20_day
+            below_ma60_4h = btc_price < ma60_4h
+
+            if below_ma20_day or below_ma60_4h:
+                reasons = []
+                if below_ma20_day:
+                    reasons.append(f"일봉20MA({math.floor(ma20_day):,}원) 하회")
+                if below_ma60_4h:
+                    reasons.append(f"4시간60MA({math.floor(ma60_4h):,}원) 하회")
+                return {
+                    "allow_buy": False,
+                    "btc_price": btc_price,
+                    "ma20_day": ma20_day,
+                    "ma60_4h": ma60_4h,
+                    "reason": f"[시장체제 필터: 현금보유(Hold Cash)] BTC 현재가({math.floor(btc_price):,}원)가 {' / '.join(reasons)} 중으로 신규 매수 중단",
+                }
+
+            return {
+                "allow_buy": True,
+                "btc_price": btc_price,
+                "ma20_day": ma20_day,
+                "ma60_4h": ma60_4h,
+                "reason": f"상승 체제 확인 (BTC {math.floor(btc_price):,}원 >= 일봉20MA {math.floor(ma20_day):,}원 & 4시간60MA {math.floor(ma60_4h):,}원)",
+            }
+        except Exception as exc:
+            logger.warning("Regime filter check error: %s", exc)
+            return {
+                "allow_buy": True,
+                "btc_price": 0.0,
+                "ma20_day": 0.0,
+                "ma60_4h": 0.0,
+                "reason": f"체제 필터 조회 예외: {exc}",
+            }
+
+    # ------------------------------------------------------------------
+    # 손실 방어 패치 2: 최유리 지정가 주문(매수 1호가) 및 미체결 자동 취소(cancel_order)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def normalize_krw_tick_price(price: float) -> float:
+        p = float(price)
+        if p >= 2_000_000:
+            return float(math.floor(p / 1000) * 1000)
+        if p >= 1_000_000:
+            return float(math.floor(p / 500) * 500)
+        if p >= 500_000:
+            return float(math.floor(p / 100) * 100)
+        if p >= 100_000:
+            return float(math.floor(p / 50) * 50)
+        if p >= 10_000:
+            return float(math.floor(p / 10) * 10)
+        if p >= 1_000:
+            return float(math.floor(p))
+        if p >= 100:
+            return round(math.floor(p * 10) / 10, 1)
+        if p >= 10:
+            return round(math.floor(p * 100) / 100, 2)
+        if p >= 1:
+            return round(math.floor(p * 1000) / 1000, 3)
+        return round(math.floor(p * 10000) / 10000, 4)
+
+    def get_best_bid_price(self, market: str, fallback_price: float = 0.0) -> float:
+        """
+        업비트 호가창(/v1/orderbook)을 조회하여 현재 매수 1호가(best bid_price)를 반환합니다.
+        """
+        self._respect_rate_limit()
+        try:
+            resp = requests.get(
+                f"{self.BASE_URL}/orderbook",
+                params={"markets": market},
+                timeout=self.timeout_sec,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    units = data[0].get("orderbook_units") or []
+                    if len(units) > 0 and units[0].get("bid_price"):
+                        return float(units[0]["bid_price"])
+        except Exception as exc:
+            logger.debug("Orderbook lookup fallback for %s: %s", market, exc)
+
+        if fallback_price <= 0:
+            tickers = self.get_tickers([market])
+            fallback_price = float(tickers[0]["trade_price"]) if tickers else self._price_cache.get(market, 10000.0)
+        return self.normalize_krw_tick_price(fallback_price)
+
+    def cancel_order(self, order_uuid: str) -> Dict[str, Any]:
+        """
+        미체결 지정가 주문 취소 (DELETE /v1/order)
+        """
+        if not order_uuid:
+            return {"success": False, "reason": "order_uuid가 없습니다."}
+        self._respect_rate_limit()
+        if not self._is_live_mode():
+            return {"success": True, "order_uuid": order_uuid, "state": "cancel"}
+        try:
+            params = {"uuid": order_uuid}
+            headers = self._build_auth_headers(params)
+            resp = requests.delete(
+                f"{self.BASE_URL}/order",
+                params=params,
+                headers=headers,
+                timeout=self.timeout_sec,
+            )
+            if resp.status_code in (200, 201):
+                return {"success": True, "order_uuid": order_uuid, "data": resp.json()}
+            return {"success": False, "reason": f"주문 취소 실패: {resp.text}"}
+        except Exception as exc:
+            return {"success": False, "reason": f"주문 취소 예외: {exc}"}
+
+    # ------------------------------------------------------------------
     # 매수 / 매도 주문 실행 (전량 조회 직접 매도 금지 규칙 강제 - 요구사항 23)
     # ------------------------------------------------------------------
     def get_balance_for_direct_sell(self, *args, **kwargs):
@@ -477,14 +610,37 @@ class UpbitOpenAPIClient:
             "매도 시에는 반드시 로컬 DB의 bot_positions 테이블에서 본인 bot_id로 기록된 volume 수량만 지정하여 분할 매도해야 합니다."
         )
 
-    def place_market_buy_order(self, market: str, price_krw: int) -> Dict[str, Any]:
+    def place_limit_buy_order(
+        self,
+        market: str,
+        price_krw: int,
+        wait_timeout_sec: int = 40,
+    ) -> Dict[str, Any]:
         """
-        시장가 매수 주문 (ord_type='price')
-        - 수수료(0.05%) 및 최소 주문 금액(5,000원) 검증 후 실행
+        최유리 지정가 매수 주문 (ord_type='limit', 매수 1호가 기준)
+        - 슬리피지 방어를 위해 현재 매수 1호가에 지정가 주문을 걸고,
+          wait_timeout_sec(기본 40초, 30초~1분 범위) 내에 체결되지 않으면 cancel_order로 자동 취소합니다.
         """
         floored_price = math.floor(float(price_krw))
         if floored_price < 5000:
             return {"success": False, "reason": f"업비트 최소 주문 금액(5,000원) 미만입니다 ({floored_price:,}원)"}
+
+        best_bid = self.get_best_bid_price(market)
+        if best_bid <= 0:
+            return {"success": False, "reason": f"{market} 매수 1호가 조회 실패"}
+
+        vol = (Decimal(str(floored_price)) / Decimal(str(best_bid))).quantize(
+            Decimal("0.00000001"), rounding=ROUND_DOWN
+        )
+        if vol * Decimal(str(best_bid)) < Decimal("5000"):
+            vol += Decimal("0.00000001")
+
+        price_str = (
+            str(int(best_bid))
+            if best_bid >= 1 and float(best_bid).is_integer()
+            else f"{best_bid:.4f}".rstrip("0").rstrip(".")
+        )
+        vol_str = f"{vol:.8f}"
 
         self._respect_rate_limit()
 
@@ -492,8 +648,9 @@ class UpbitOpenAPIClient:
             params = {
                 "market": market,
                 "side": "bid",
-                "price": str(floored_price),
-                "ord_type": "price",
+                "volume": vol_str,
+                "price": price_str,
+                "ord_type": "limit",
             }
             try:
                 headers = self._build_auth_headers(params)
@@ -504,31 +661,64 @@ class UpbitOpenAPIClient:
                     timeout=self.timeout_sec,
                 )
                 if resp.status_code not in (200, 201):
-                    return {"success": False, "reason": f"업비트 매수 주문 실패: {resp.text}"}
+                    return {"success": False, "reason": f"업비트 지정가 매수 주문 실패: {resp.text}"}
                 order_data = resp.json()
                 order_uuid = order_data["uuid"]
-                return self.reconcile_order(order_uuid, market, fallback_price_krw=floored_price, side="bid")
+
+                # 30초~1분(기본 40초) 동안 체결 여부 폴링 후 미체결 시 cancel_order 실행
+                deadline = time.time() + max(30, min(60, int(wait_timeout_sec)))
+                while time.time() < deadline:
+                    time.sleep(3.0)
+                    self._respect_rate_limit()
+                    q_params = {"uuid": order_uuid}
+                    q_headers = self._build_auth_headers(q_params)
+                    o_resp = requests.get(
+                        f"{self.BASE_URL}/order",
+                        params=q_params,
+                        headers=q_headers,
+                        timeout=self.timeout_sec,
+                    )
+                    if o_resp.status_code == 200:
+                        o_detail = o_resp.json()
+                        state = o_detail.get("state")
+                        if state in ("done", "cancel"):
+                            return self.reconcile_order(
+                                order_uuid, market, fallback_price_krw=floored_price, side="bid"
+                            )
+
+                # 제한 시간(30~60초) 내 미체결 시 주문 자동 취소 (cancel_order)
+                self.cancel_order(order_uuid)
+                time.sleep(0.5)
+                rec = self.reconcile_order(order_uuid, market, fallback_price_krw=0, side="bid")
+                if float(rec.get("executed_volume", 0) or 0) <= 0:
+                    return {
+                        "success": False,
+                        "cancelled": True,
+                        "order_uuid": order_uuid,
+                        "reason": f"{market} 지정가 매수(1호가 {price_str}원) {wait_timeout_sec}초 미체결로 자동 취소됨",
+                    }
+                return rec
             except Exception as exc:
-                return {"success": False, "reason": f"업비트 매수 API 예외: {exc}"}
+                return {"success": False, "reason": f"업비트 지정가 매수 API 예외: {exc}"}
 
-        # Paper / 로컬 안전 모드 체결 처리
-        tickers = self.get_tickers([market])
-        current_price = float(tickers[0]["trade_price"]) if tickers else self._price_cache.get(market, 10000.0)
-        vol = (
-            Decimal(str(floored_price)) / Decimal(str(current_price))
-        ).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+        # Paper / 로컬 안전 모드 체결 처리 (1호가 지정가 기준)
         paid_fee = round(floored_price * 0.0005, 2)
-
         return {
             "success": True,
             "order_uuid": f"order-bid-{uuid.uuid4().hex[:12]}",
             "market": market,
             "side": "bid",
-            "avg_price": current_price,
-            "executed_volume": f"{vol:.8f}",
+            "avg_price": best_bid,
+            "executed_volume": vol_str,
             "executed_funds": floored_price,
             "paid_fee": paid_fee,
         }
+
+    def place_market_buy_order(self, market: str, price_krw: int) -> Dict[str, Any]:
+        """
+        기존 시장가 매수 호출을 최유리 지정가 매수(매수 1호가 + 40초 미체결 시 자동 취소)로 전환
+        """
+        return self.place_limit_buy_order(market=market, price_krw=price_krw, wait_timeout_sec=40)
 
     def place_market_sell_order_by_position_volume(
         self,

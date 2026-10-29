@@ -79,7 +79,19 @@ class DualMomentumBot(BaseTradingBot):
                 if sell_res.get("success"):
                     actions.append({"type": "SELL_MOMENTUM_DECAY", **sell_res})
 
-        # 4) 절대 모멘텀 + 상대 모멘텀 1위 종목 신규 진입
+        # 4) 공통 시장 체제 필터(Regime Filter): BTC 현재가가 일봉 20MA 또는 4시간 60MA 하회 시 신규 매수 전면 중단(Hold Cash)
+        regime = self.check_market_regime_filter()
+        if not regime.get("allow_buy", True):
+            self.db.update_bot_status_message(self.bot_id, regime.get("reason", "시장 체제 필터(Hold Cash)"))
+            return {
+                "bot_id": self.bot_id,
+                "status": "HOLD_CASH",
+                "reason": regime.get("reason"),
+                "rankings": momentum_scores,
+                "actions": actions,
+            }
+
+        # 5) 절대 모멘텀 + 상대 모멘텀 1위 종목 신규 진입
         bot_state = self.get_bot_state() or bot_state
         open_positions = bot_state.get("open_positions", [])
         held_markets = {p["market"] for p in open_positions}
@@ -118,3 +130,4 @@ class DualMomentumBot(BaseTradingBot):
             "rankings": momentum_scores,
             "actions": actions,
         }
+

@@ -85,17 +85,43 @@ class BaseTradingBot(ABC):
             return 5000 if max_affordable >= 5000 else 5000
         return safe_order_krw
 
-    def buy_market_with_lock(self, market: str, order_krw: int) -> Dict[str, Any]:
+    def check_market_regime_filter(self) -> Dict[str, Any]:
         """
-        가상 잔고 트랜잭션 락을 통과한 경우에만 공용 Open API 모듈로 시장가 매수 주문 실행
+        [손실 방어 패치 1] 전체 봇 공통 시장 체제 필터 (Regime Filter):
+        대장주 비트코인(KRW-BTC)의 현재가가 일봉 20일 이동평균선 또는 4시간봉 60 이동평균선 아래에 있다면
+        Bot 1, 2, 3 모두 신규 매수를 전면 중단(Hold Cash)합니다.
         """
+        self.sleep_rate_limit()
+        return self.api.check_btc_regime_filter()
+
+    def buy_limit_with_lock(self, market: str, order_krw: int, wait_timeout_sec: int = 40) -> Dict[str, Any]:
+        """
+        [손실 방어 패치 1 & 2]
+        1) 시장 체제 필터(BTC 20일선 / 4시간 60이평선) 통과 여부 확인 후 하락장이면 신규 매수 전면 중단(Hold Cash)
+        2) 매수 신호 발생 시 현재 매수 1호가에 최유리 지정가 주문(limit_order)을 걸고,
+           30초~1분(기본 40초) 내에 체결되지 않으면 주문을 자동 취소(cancel_order)합니다.
+        """
+        regime = self.check_market_regime_filter()
+        if not regime.get("allow_buy", True):
+            reason_msg = regime.get("reason", "시장 체제 필터 발동으로 신규 매수 중단(Hold Cash)")
+            self.db.update_bot_status_message(self.bot_id, reason_msg)
+            return {"success": False, "hold_cash": True, "reason": reason_msg}
+
         floored_krw = math.floor(float(order_krw))
         return self.db.execute_buy_with_virtual_lock(
             bot_id=self.bot_id,
             market=market,
             requested_krw=floored_krw,
-            order_callback=self.api.place_market_buy_order,
+            order_callback=lambda mkt, krw: self.api.place_limit_buy_order(
+                market=mkt, price_krw=krw, wait_timeout_sec=wait_timeout_sec
+            ),
         )
+
+    def buy_market_with_lock(self, market: str, order_krw: int) -> Dict[str, Any]:
+        """
+        가상 잔고 트랜잭션 락을 통과한 경우에만 최유리 지정가(1호가 + 미체결 취소) 및 체제 필터를 적용해 매수 실행
+        """
+        return self.buy_limit_with_lock(market=market, order_krw=order_krw, wait_timeout_sec=40)
 
     def sell_position_isolated(self, position_id: int) -> Dict[str, Any]:
         """

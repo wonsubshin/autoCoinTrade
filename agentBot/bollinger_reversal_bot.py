@@ -72,7 +72,13 @@ class BollingerReversalBot(BaseTradingBot):
                 if sell_res.get("success"):
                     actions.append({"type": "SELL_BB_REBOUND_TARGET", **sell_res})
 
-        # 3) 유동성 필터 통과 고변동성 코인 대상 볼린저 밴드 하단 역추세 진입 탐색
+        # 3) 공통 시장 체제 필터(Regime Filter): BTC 현재가가 일봉 20MA 또는 4시간 60MA 하회 시 신규 매수 전면 중단(Hold Cash)
+        regime = self.check_market_regime_filter()
+        if not regime.get("allow_buy", True):
+            self.db.update_bot_status_message(self.bot_id, regime.get("reason", "시장 체제 필터(Hold Cash)"))
+            return {"bot_id": self.bot_id, "status": "HOLD_CASH", "reason": regime.get("reason"), "actions": actions}
+
+        # 4) 유동성 필터 통과 고변동성 코인 대상 볼린저 밴드 하단 역추세 진입 탐색
         bot_state = self.get_bot_state() or bot_state
         open_positions = bot_state.get("open_positions", [])
         held_markets = {p["market"] for p in open_positions}
@@ -127,3 +133,4 @@ class BollingerReversalBot(BaseTradingBot):
             f"볼린저 역추세 분봉 감시 중 (count=8, iloc[-8], 실행 {len(actions)}건)",
         )
         return {"bot_id": self.bot_id, "status": "OK", "actions": actions}
+

@@ -1247,8 +1247,145 @@ function getSafeOrderKrw(bot, ratio = 0.35) {
   return safeKrw;
 }
 
+// ------------------------------------------------------------------
+// [손실 방어 패치 1] 전체 봇 공통 시장 체제 필터 (BTC Regime Filter)
+// 대장주 KRW-BTC 현재가가 일봉 20일 이동평균선 또는 4시간봉 60 이동평균선 아래이면
+// Bot 1, 2, 3 모두 신규 매수를 전면 중단(Hold Cash)합니다.
+// ------------------------------------------------------------------
+let cachedRegimeState = {
+  checkedAtMs: 0,
+  allowBuy: true,
+  btcPrice: 0,
+  ma20Day: 0,
+  ma60_4h: 0,
+  reason: "BTC 시장 체제 확인 중",
+};
+
+async function checkMarketRegimeFilter(tickerMap = null) {
+  const nowMs = Date.now();
+  if (nowMs - cachedRegimeState.checkedAtMs < 20000 && cachedRegimeState.btcPrice > 0) {
+    return cachedRegimeState;
+  }
+
+  try {
+    const dayCandles = await fetchUpbitCandlesSorted("KRW-BTC", "days", 20);
+    const h4Candles = await fetchUpbitCandlesSorted("KRW-BTC", "minutes/240", 60);
+
+    if (dayCandles.length < 20 || h4Candles.length < 20) {
+      return cachedRegimeState;
+    }
+
+    const tkBtc = tickerMap ? tickerMap.get("KRW-BTC") : null;
+    const btcPrice = Number(tkBtc?.trade_price || dayCandles[dayCandles.length - 1].trade_price || 0);
+    const dayCloses = dayCandles.slice(-20).map((c) => Number(c.trade_price));
+    const h4Closes = h4Candles.slice(-60).map((c) => Number(c.trade_price));
+
+    const ma20Day = dayCloses.reduce((a, b) => a + b, 0) / dayCloses.length;
+    const ma60_4h = h4Closes.reduce((a, b) => a + b, 0) / h4Closes.length;
+
+    const belowMa20Day = btcPrice < ma20Day;
+    const belowMa60_4h = btcPrice < ma60_4h;
+
+    if (belowMa20Day || belowMa60_4h) {
+      const reasons = [];
+      if (belowMa20Day) reasons.push(`일봉20MA(${Math.floor(ma20Day).toLocaleString("ko-KR")}) 하회`);
+      if (belowMa60_4h) reasons.push(`4시간60MA(${Math.floor(ma60_4h).toLocaleString("ko-KR")}) 하회`);
+      cachedRegimeState = {
+        checkedAtMs: nowMs,
+        allowBuy: false,
+        btcPrice,
+        ma20Day,
+        ma60_4h,
+        reason: `[시장체제 필터: 현금보유(Hold Cash)] BTC 현재가(${Math.floor(btcPrice).toLocaleString(
+          "ko-KR"
+        )}원)가 ${reasons.join(" · ")} 중으로 신규 매수 중단`,
+      };
+      return cachedRegimeState;
+    }
+
+    cachedRegimeState = {
+      checkedAtMs: nowMs,
+      allowBuy: true,
+      btcPrice,
+      ma20Day,
+      ma60_4h,
+      reason: `상승 체제 확인 (BTC ${Math.floor(btcPrice).toLocaleString("ko-KR")}원 >= 일봉20MA ${Math.floor(
+        ma20Day
+      ).toLocaleString("ko-KR")}원 & 4시간60MA ${Math.floor(ma60_4h).toLocaleString("ko-KR")}원)`,
+    };
+    return cachedRegimeState;
+  } catch {
+    return cachedRegimeState;
+  }
+}
+
+// ------------------------------------------------------------------
+// [손실 방어 패치 2] 시장가 주문 -> 최유리 지정가 주문(매수 1호가) 전환 및 미체결 취소(cancel_order)
+// ------------------------------------------------------------------
+function normalizeUpbitKrwTick(price) {
+  const p = Number(price || 0);
+  if (p >= 2000000) return Math.floor(p / 1000) * 1000;
+  if (p >= 1000000) return Math.floor(p / 500) * 500;
+  if (p >= 500000) return Math.floor(p / 100) * 100;
+  if (p >= 100000) return Math.floor(p / 50) * 50;
+  if (p >= 10000) return Math.floor(p / 10) * 10;
+  if (p >= 1000) return Math.floor(p);
+  if (p >= 100) return Number((Math.floor(p * 10) / 10).toFixed(1));
+  if (p >= 10) return Number((Math.floor(p * 100) / 100).toFixed(2));
+  if (p >= 1) return Number((Math.floor(p * 1000) / 1000).toFixed(3));
+  return Number((Math.floor(p * 10000) / 10000).toFixed(4));
+}
+
+async function fetchUpbitBestBidPrice(market, fallbackPrice = 0) {
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const resp = await fetch(`https://api.upbit.com/v1/orderbook?markets=${encodeURIComponent(market)}`);
+    if (resp.status === 200) {
+      const data = await resp.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const units = data[0]?.orderbook_units;
+        if (Array.isArray(units) && units.length > 0 && Number(units[0]?.bid_price) > 0) {
+          return Number(units[0].bid_price);
+        }
+      }
+    }
+  } catch {}
+  return normalizeUpbitKrwTick(fallbackPrice);
+}
+
+async function cancelUpbitOrder(orderUuid, cfg) {
+  if (!orderUuid) return false;
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const params = { uuid: orderUuid };
+    const token = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), params);
+    const resp = await fetch(`https://api.upbit.com/v1/order?uuid=${encodeURIComponent(orderUuid)}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    });
+    return resp.status === 200 || resp.status === 201;
+  } catch {
+    return false;
+  }
+}
+
 async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
   const db = getDb();
+
+  // 공통 시장 체제 필터(Regime Filter) 재확인
+  const regimeInfo = await checkMarketRegimeFilter();
+  if (!regimeInfo.allowBuy) {
+    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+      regimeInfo.reason,
+      nowKSTString(),
+      bot.bot_id
+    );
+    return false;
+  }
+
   const latestBot = getBots().find((b) => b.bot_id === bot.bot_id);
   if (!latestBot || Number(latestBot.virtual_krw || 0) < orderKrw) return false;
 
@@ -1281,18 +1418,34 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
     return false;
   }
 
+  // 매수 1호가(Best Bid) 조회 후 최유리 지정가 주문(ord_type: 'limit') 생성
+  const bestBidPrice = await fetchUpbitBestBidPrice(market, currentPrice);
+  if (!bestBidPrice || bestBidPrice <= 0) {
+    return false;
+  }
+
+  let rawVol = Math.floor(orderKrw) / bestBidPrice;
+  let limitVolNum = Number(rawVol.toFixed(8));
+  if (limitVolNum * bestBidPrice < 5000) {
+    limitVolNum = Number((limitVolNum + 0.00000001).toFixed(8));
+  }
+  const limitVolumeStr = limitVolNum.toFixed(8);
+  const limitPriceStr = String(bestBidPrice);
+
   let orderUuid = "";
-  let execPrice = Number(currentPrice);
-  let execVolume = (orderKrw / execPrice).toFixed(8);
-  let fee = Math.floor(orderKrw * 0.0005);
+  let execPrice = Number(bestBidPrice);
+  let execVolume = limitVolumeStr;
+  let actualBuyAmount = Math.floor(limitVolNum * bestBidPrice);
+  let fee = Math.floor(actualBuyAmount * 0.0005);
 
   try {
     await new Promise((r) => setTimeout(r, 120));
     const params = {
       market,
       side: "bid",
-      price: String(Math.floor(orderKrw)),
-      ord_type: "price",
+      volume: limitVolumeStr,
+      price: limitPriceStr,
+      ord_type: "limit",
     };
     const token = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), params);
     const resp = await fetch("https://api.upbit.com/v1/orders", {
@@ -1308,53 +1461,120 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
       const errData = await resp.json().catch(() => ({}));
       const errMsg = errData?.error?.message || `HTTP ${resp.status}`;
       db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-        `${market} 매수 주문 실패: ${errMsg}`,
+        `${market} 지정가 매수 주문 실패: ${errMsg}`,
         nowKSTString(),
         bot.bot_id
       );
       return false;
     }
     const orderData = await resp.json();
-    orderUuid = orderData?.uuid || `upbit-bid-${crypto.randomUUID().slice(0, 8)}`;
+    orderUuid = orderData?.uuid || "";
+    if (!orderUuid) return false;
 
-    // 주문 체결 확인 (Order Reconciliation: GET /v1/order?uuid=...)
-    if (orderData?.uuid) {
-      for (let attempt = 0; attempt < 4; attempt++) {
-        await new Promise((r) => setTimeout(r, 400));
-        try {
-          const qParams = { uuid: orderData.uuid };
-          const qToken = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), qParams);
-          const oResp = await fetch(
-            `https://api.upbit.com/v1/order?uuid=${encodeURIComponent(orderData.uuid)}`,
-            {
-              headers: {
-                Authorization: `Bearer ${qToken}`,
-                Accept: "application/json",
-              },
-            }
-          );
-          if (oResp.status === 200) {
-            const oDetail = await oResp.json();
-            const filledVol = Number(oDetail?.executed_volume || 0);
+    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+      `${market} 매수 1호가(${bestBidPrice.toLocaleString("ko-KR")}원) 지정가 주문 접수 — 체결 대기 중(최대 40초)`,
+      nowKSTString(),
+      bot.bot_id
+    );
+
+    // 30초~1분(40초) 동안 체결 확인 후 미체결 시 주문 취소(cancel_order) 실행
+    let isOrderDone = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await new Promise((r) => setTimeout(r, 4000));
+      try {
+        const qParams = { uuid: orderUuid };
+        const qToken = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), qParams);
+        const oResp = await fetch(
+          `https://api.upbit.com/v1/order?uuid=${encodeURIComponent(orderUuid)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${qToken}`,
+              Accept: "application/json",
+            },
+          }
+        );
+        if (oResp.status === 200) {
+          const oDetail = await oResp.json();
+          const state = String(oDetail?.state || "");
+          const filledVol = Number(oDetail?.executed_volume || 0);
+          if (state === "done" || state === "cancel") {
+            isOrderDone = true;
             if (filledVol > 0) {
               execVolume = String(oDetail.executed_volume);
               const tradesArr = Array.isArray(oDetail.trades) ? oDetail.trades : [];
               const totalFunds = tradesArr.reduce((acc, t) => acc + Number(t.funds || 0), 0);
               if (totalFunds > 0) {
+                actualBuyAmount = Math.floor(totalFunds);
                 execPrice = Math.floor(totalFunds / filledVol);
               }
               if (oDetail.paid_fee !== undefined) {
                 fee = Math.ceil(Number(oDetail.paid_fee || fee));
               }
-              break;
+            } else {
+              execVolume = "0";
+            }
+            break;
+          }
+        }
+      } catch {}
+    }
+
+    // 40초 내 미체결 시 지정가 주문 취소 (cancel_order)
+    if (!isOrderDone) {
+      await cancelUpbitOrder(orderUuid, cfg);
+      await new Promise((r) => setTimeout(r, 500));
+      let filledAfterCancel = 0;
+      try {
+        const qParams = { uuid: orderUuid };
+        const qToken = createUpbitJwt(String(cfg.access_key).trim(), String(cfg.secret_key).trim(), qParams);
+        const oResp = await fetch(
+          `https://api.upbit.com/v1/order?uuid=${encodeURIComponent(orderUuid)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${qToken}`,
+              Accept: "application/json",
+            },
+          }
+        );
+        if (oResp.status === 200) {
+          const oDetail = await oResp.json();
+          filledAfterCancel = Number(oDetail?.executed_volume || 0);
+          if (filledAfterCancel > 0) {
+            execVolume = String(oDetail.executed_volume);
+            const tradesArr = Array.isArray(oDetail.trades) ? oDetail.trades : [];
+            const totalFunds = tradesArr.reduce((acc, t) => acc + Number(t.funds || 0), 0);
+            if (totalFunds > 0) {
+              actualBuyAmount = Math.floor(totalFunds);
+              execPrice = Math.floor(totalFunds / filledAfterCancel);
+            }
+            if (oDetail.paid_fee !== undefined) {
+              fee = Math.ceil(Number(oDetail.paid_fee || fee));
             }
           }
-        } catch {}
+        }
+      } catch {}
+
+      if (filledAfterCancel <= 0) {
+        db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+          `${market} 지정가 매수(1호가 ${bestBidPrice.toLocaleString("ko-KR")}원) 40초 미체결로 자동 취소됨 (슬리피지 방어)`,
+          nowKSTString(),
+          bot.bot_id
+        );
+        return false;
       }
+    }
+
+    if (Number(execVolume) <= 0) {
+      db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+        `${market} 지정가 매수 주문이 미체결 취소되었습니다.`,
+        nowKSTString(),
+        bot.bot_id
+      );
+      return false;
     }
   } catch (err) {
     db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-      `${market} 매수 API 통신 오류: ${err.message}`,
+      `${market} 지정가 매수 API 통신 오류: ${err.message}`,
       nowKSTString(),
       bot.bot_id
     );
@@ -1362,10 +1582,10 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
   }
 
   const now = nowKSTString();
-  const newVirtual = Math.max(0, Math.floor(Number(latestBot.virtual_krw) - orderKrw - fee));
+  const newVirtual = Math.max(0, Math.floor(Number(latestBot.virtual_krw) - actualBuyAmount - fee));
   db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
     newVirtual,
-    `${market} 자동 매수 체결 (${orderKrw.toLocaleString("ko-KR")}원)`,
+    `${market} 최유리 지정가(1호가 ${execPrice.toLocaleString("ko-KR")}원) 매수 체결 (${actualBuyAmount.toLocaleString("ko-KR")}원)`,
     now,
     bot.bot_id
   );
@@ -1378,13 +1598,13 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
         profit_krw, profit_pct, status
       ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, 'HOLDING')
     `)
-    .run(bot.bot_id, market, orderUuid, execPrice, execVolume, orderKrw, now);
+    .run(bot.bot_id, market, orderUuid, execPrice, execVolume, actualBuyAmount, now);
 
   db.prepare(`
     INSERT INTO bot_positions (
       bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-  `).run(bot.bot_id, market, orderUuid, execVolume, execPrice, orderKrw, fee, trRes.lastInsertRowid, now);
+  `).run(bot.bot_id, market, orderUuid, execVolume, execPrice, actualBuyAmount, fee, trRes.lastInsertRowid, now);
   return true;
 }
 
@@ -1639,7 +1859,23 @@ async function runBotStrategiesCycle() {
       if (!refreshedBot || Number(refreshedBot.is_running) !== 1) continue;
       const heldSet = new Set((refreshedBot.open_positions || []).map((p) => p.market));
 
-      // 2) 봇별 전략 평가
+      // [손실 방어 패치 1] 시장 체제 필터 (BTC Regime Filter):
+      // 대장주 KRW-BTC가 일봉 20MA 또는 4시간봉 60MA 하회 시 Bot 1, 2, 3 신규 매수 전면 중단 (Hold Cash)
+      const regimeInfo = await checkMarketRegimeFilter(tickerMap);
+      if (!regimeInfo.allowBuy) {
+        const holdingCount = (refreshedBot.open_positions || []).length;
+        const msg = holdingCount > 0
+          ? `${regimeInfo.reason} (기존 ${holdingCount}건 보유 포지션 익절/손절 감시 지속)`
+          : regimeInfo.reason;
+        db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+          msg,
+          now,
+          bot.bot_id
+        );
+        continue;
+      }
+
+      // 2) 봇별 전략 평가 (상승 체제 시에만 진입)
       if (bot.bot_id === "bot_volatility") {
         const candidates = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-DOGE"].filter((m) => {
           const tk = tickerMap.get(m);
