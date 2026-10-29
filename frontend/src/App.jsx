@@ -1577,6 +1577,63 @@ export default function App() {
                         </div>
                       </div>
 
+                      {(() => {
+                        const defaultRatio =
+                          b.bot_id === "bot_volatility"
+                            ? 0.3
+                            : b.bot_id === "bot_dual_momentum"
+                            ? 0.35
+                            : 0.45;
+                        const rawOrderRatio = form.config?.order_ratio;
+                        const ratioPctVal =
+                          rawOrderRatio === "" || rawOrderRatio === undefined || rawOrderRatio === null
+                            ? Math.round(defaultRatio * 100)
+                            : Number(rawOrderRatio) <= 1
+                            ? Math.round(Number(rawOrderRatio) * 100)
+                            : Number(rawOrderRatio);
+                        const allocKrw = Math.floor(Number(b.allocated_capital || 0));
+                        const rawPreviewKrw = Math.floor(allocKrw * (Number(ratioPctVal || 0) / 100));
+                        const effectivePreviewKrw =
+                          allocKrw >= 5000 && rawPreviewKrw < 5000 ? 5000 : rawPreviewKrw;
+
+                        return (
+                          <div className="form-row">
+                            <label>
+                              1회 매수 비중 (10% ~ 100%) → 1회 주문 예상액:{" "}
+                              <strong style={{ color: "#38bdf8" }}>
+                                {effectivePreviewKrw.toLocaleString("ko-KR")}원
+                              </strong>
+                              {allocKrw >= 5000 && rawPreviewKrw < 5000 && (
+                                <span style={{ color: "#fbbf24", fontSize: "11px", marginLeft: "4px" }}>
+                                  (최소주문 5,000원 자동적용)
+                                </span>
+                              )}
+                            </label>
+                            <input
+                              type="number"
+                              step="5"
+                              min="10"
+                              max="100"
+                              className="form-input"
+                              placeholder="1회 매수 비중(%) 입력 (예: 50, 100)"
+                              value={
+                                rawOrderRatio === ""
+                                  ? ""
+                                  : ratioPctVal
+                              }
+                              onChange={(e) => {
+                                if (e.target.value === "") {
+                                  updateConfigField("order_ratio", "");
+                                } else {
+                                  const pct = Math.min(100, Math.max(1, Number(e.target.value)));
+                                  updateConfigField("order_ratio", Number((pct / 100).toFixed(4)));
+                                }
+                              }}
+                            />
+                          </div>
+                        );
+                      })()}
+
                       {b.bot_id === "bot_volatility" && (
                         <div className="form-row">
                           <label>변동성 돌파 K 계수 (0.1 ~ 0.9 / 추천: 0.4)</label>

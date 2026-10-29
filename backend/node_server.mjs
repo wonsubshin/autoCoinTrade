@@ -1128,10 +1128,13 @@ function getSafeOrderKrw(bot, ratio = 0.35) {
   const virtualKrw = Math.floor(Number(bot.virtual_krw || 0));
   if (virtualKrw < 5000) return 0;
   const cfgOrderKrw = Number(bot.config?.order_krw || 0);
-  let rawBudget = cfgOrderKrw >= 5000 ? Math.min(cfgOrderKrw, virtualKrw) : Math.floor(virtualKrw * ratio);
-  let safeKrw = Math.floor(rawBudget / 1.0005);
+  const rawRatio = Number(bot.config?.order_ratio ?? ratio ?? 0.35);
+  const normRatio = Math.min(1.0, Math.max(0.05, rawRatio > 1 ? rawRatio / 100.0 : rawRatio));
+  const baseCapital = Math.max(virtualKrw, Math.floor(Number(bot.allocated_capital || 0)));
+  const targetKrw = cfgOrderKrw >= 5000 ? cfgOrderKrw : Math.floor(baseCapital * normRatio);
+  const maxAffordable = Math.floor(virtualKrw / 1.0005);
+  let safeKrw = Math.min(targetKrw, maxAffordable);
   if (safeKrw < 5000) {
-    const maxAffordable = Math.floor(virtualKrw / 1.0005);
     safeKrw = maxAffordable >= 5000 ? 5000 : 0;
   }
   return safeKrw;
@@ -1680,7 +1683,7 @@ async function runBotStrategiesCycle() {
             const touchedLower = curLow <= lowerBand && curClose >= curOpen && rsi <= 40.0;
             const oversold = rsi <= 30.0 && curClose < baseClose;
             if (touchedLower || oversold) {
-              const orderKrw = getSafeOrderKrw(refreshedBot, 0.45);
+              const orderKrw = getSafeOrderKrw(refreshedBot, Number(refreshedBot.config?.order_ratio || 0.45));
               if (orderKrw >= 5000) {
                 const ok = await executeBotBuyOrder(refreshedBot, mkt, orderKrw, curClose);
                 if (ok) {
