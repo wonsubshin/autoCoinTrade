@@ -1303,7 +1303,7 @@ export default function App() {
                         border: "1px solid rgba(99, 102, 241, 0.4)",
                       }}
                     >
-                      Gemini 1.5 Flash
+                      {aiBriefing?.latest?.model ? aiBriefing.latest.model.replace("models/", "") : "Gemini 3.5 Flash"}
                     </span>
                   </div>
                   {aiBriefing?.latest && (

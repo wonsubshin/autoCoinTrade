@@ -950,86 +950,103 @@ ${b.open_positions
 
 이모지와 깔끔한 불릿포인트, 굵은 글씨를 활용하여 가독성을 극대화해주세요.`;
 
-  // 6. Gemini API 호출
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(
-    apiKey
-  )}`;
+  // 6. Gemini API 호출 (최신 사용 가능 모델 자동 탐색 & 폴백)
+  const candidateModels = [
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+  ];
 
-  try {
-    const controller = new AbortController();
-    const timeoutTimer = setTimeout(() => controller.abort(), 25000);
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 2500,
-        },
-      }),
-    });
-    clearTimeout(timeoutTimer);
+  let chosenModel = "gemini-3.5-flash";
+  let analysisText = "";
+  let lastErrorMsg = "";
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error("Gemini API Error Response:", errText);
-      let errMsg = `Gemini API 호출 실패 (HTTP ${response.status})`;
-      try {
-        const errJson = JSON.parse(errText);
-        if (errJson?.error?.message) {
-          errMsg = `Gemini API 오류: ${errJson.error.message}`;
+  for (const model of candidateModels) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
+        apiKey
+      )}`;
+      const controller = new AbortController();
+      const timeoutTimer = setTimeout(() => controller.abort(), 30000);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 2500,
+          },
+        }),
+      });
+      clearTimeout(timeoutTimer);
+
+      if (response.ok) {
+        const resJson = await response.json();
+        const text = resJson.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          chosenModel = model;
+          analysisText = text;
+          break;
         }
-      } catch {}
-      return { success: false, error: "API_CALL_FAILED", message: errMsg };
+      } else {
+        const errText = await response.text();
+        console.warn(`[Gemini API] Model ${model} failed (HTTP ${response.status}):`, errText);
+        try {
+          const errJson = JSON.parse(errText);
+          lastErrorMsg = errJson?.error?.message || `HTTP ${response.status}`;
+        } catch {
+          lastErrorMsg = `HTTP ${response.status}: ${errText}`;
+        }
+      }
+    } catch (reqErr) {
+      console.warn(`[Gemini API] Request exception for model ${model}:`, reqErr.message);
+      lastErrorMsg = reqErr.message;
     }
+  }
 
-    const resJson = await response.json();
-    const analysisText = resJson.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!analysisText) {
-      return { success: false, error: "NO_CONTENT", message: "Gemini AI 응답에서 텍스트를 추출하지 못했습니다." };
-    }
-
-    // 7. DB 저장
-    const insertStmt = db.prepare(`
-      INSERT INTO ai_market_briefings (
-        provider, model, btc_price, btc_daily_20ma, btc_4h_60ma, regime_status, briefing_text, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const info = insertStmt.run(
-      "gemini",
-      "gemini-1.5-flash",
-      btcPrice,
-      btcDaily20Ma,
-      btc4h60Ma,
-      isHoldCash ? "HOLD_CASH" : "NORMAL",
-      analysisText,
-      nowStr
-    );
-
-    return {
-      success: true,
-      briefing: {
-        id: info.lastInsertRowid,
-        provider: "gemini",
-        model: "gemini-1.5-flash",
-        btc_price: btcPrice,
-        btc_daily_20ma: btcDaily20Ma,
-        btc_4h_60ma: btc4h60Ma,
-        regime_status: isHoldCash ? "HOLD_CASH" : "NORMAL",
-        briefing_text: analysisText,
-        created_at: nowStr,
-      },
-    };
-  } catch (err) {
-    console.error("Gemini API Request Exception:", err);
+  if (!analysisText) {
     return {
       success: false,
-      error: "REQUEST_EXCEPTION",
-      message: `Gemini API 통신 중 예외가 발생했습니다: ${err.message}`,
+      error: "API_CALL_FAILED",
+      message: `Gemini API 호출 실패: ${lastErrorMsg || "응답 텍스트를 생성하지 못했습니다."}`,
     };
   }
+
+  // 7. DB 저장
+  const insertStmt = db.prepare(`
+    INSERT INTO ai_market_briefings (
+      provider, model, btc_price, btc_daily_20ma, btc_4h_60ma, regime_status, briefing_text, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const info = insertStmt.run(
+    "gemini",
+    chosenModel,
+    btcPrice,
+    btcDaily20Ma,
+    btc4h60Ma,
+    isHoldCash ? "HOLD_CASH" : "NORMAL",
+    analysisText,
+    nowStr
+  );
+
+  return {
+    success: true,
+    briefing: {
+      id: info.lastInsertRowid,
+      provider: "gemini",
+      model: chosenModel,
+      btc_price: btcPrice,
+      btc_daily_20ma: btcDaily20Ma,
+      btc_4h_60ma: btc4h60Ma,
+      regime_status: isHoldCash ? "HOLD_CASH" : "NORMAL",
+      briefing_text: analysisText,
+      created_at: nowStr,
+    },
+  };
 }
 
 const server = http.createServer(async (req, res) => {
