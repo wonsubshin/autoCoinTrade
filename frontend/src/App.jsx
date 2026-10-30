@@ -903,10 +903,7 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem("autoCoinTrade_menu", activeMenu);
     localStorage.setItem("autoCoinTrade_menu", activeMenu);
-    if (activeMenu === "news") {
-      fetchNews(1);
-    }
-  }, [activeMenu, fetchNews]);
+  }, [activeMenu]);
 
   useEffect(() => {
     sessionStorage.setItem("autoCoinTrade_bot", selectedBotId);
@@ -950,6 +947,12 @@ export default function App() {
     },
     [newsKeyword, newsStartDate, newsEndDate]
   );
+
+  useEffect(() => {
+    if (activeMenu === "news") {
+      fetchNews(1);
+    }
+  }, [activeMenu, fetchNews]);
 
   const handleSearchNews = (e) => {
     if (e) e.preventDefault();
