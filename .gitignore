@@ -16,6 +16,10 @@ frontend/dist/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+*.db
+*.db-shm
+*.db-wal
+trading_ledger.db
 
 # Logs & PID files
 logs/

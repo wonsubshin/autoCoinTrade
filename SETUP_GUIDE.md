@@ -190,3 +190,31 @@ curl -s -I http://localhost:9000
 ### Q4. AI 마켓 브리핑 요청 시 `NO_API_KEY` 오류
 - **원인**: Gemini API 키가 아직 설정되지 않았습니다.
 - **해결**: 웹 브라우저(`http://localhost:9000`)의 상단 AI 분석 카드에서 `[⚙️ API 키 등록]` 버튼을 클릭하고 Gemini API 키를 입력하거나, `config/upbit_config.json` 파일의 `gemini_api_key` 항목에 입력하세요.
+
+---
+
+## 9. 파이썬 멀티프로세싱 오케스트레이터 및 LLM 장세 필터 실행 가이드
+
+독립된 Python 멀티프로세싱 아키텍처 기반으로 3개 전략 봇(`bot_vb`, `bot_momentum`, `bot_bb`)과 4번째 워커(`bot_llm_filter`)를 실행할 때 사용합니다:
+
+### 파일 구성
+- **`init_db.py`**: SQLite(`trading_ledger.db`, WAL 모드) 가상 원장 및 단일 행(`id=1`) `market_regime_filter` 테이블 초기화
+- **`llm_filter_worker.py`**: 1~4시간 주기 시장 지표/뉴스 수집, LLM 분석, 룰베이스 폴백 및 DB 갱신 워커
+- **`bots.py`**: 공통 매수 게이트웨이(`can_enter_position`), 슬리피지 방어형 주문 래퍼, 3개 봇 전략(슈퍼트렌드 변동성 돌파, BB 스퀴즈 VCP 돌파, 다단계 분할 매수 DCA)
+- **`main_orchestrator.py`**: 4개 워커 프로세스 상시 헬스체크, 크래시 시 자동 재기동(Auto-Restart), Graceful Shutdown 관리
+- **`run_orchestrator.bat`**: Windows 원클릭 실행 스크립트
+
+### 실행 방법
+```powershell
+# 1. 패키지 설치
+pip install -r requirements.txt
+
+# 2. .env 설정 복사 및 편집 (.env.example 참조, 기본: DRY_RUN=True 모의투자)
+copy .env.example .env
+
+# 3. 오케스트레이터 실행 (원클릭 또는 CLI)
+.\run_orchestrator.bat
+# 또는
+python main_orchestrator.py
+```
+
