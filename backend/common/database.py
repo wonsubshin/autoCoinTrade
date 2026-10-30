@@ -1073,30 +1073,63 @@ class DatabaseManager:
                     ),
                 )
 
-            for p in payload.get("bot_positions", []):
-                tx.execute(
-                    """
-                    INSERT INTO bot_positions (
-                        id, bot_id, market, order_uuid, volume,
-                        avg_buy_price, buy_amount, buy_fee, trade_id,
-                        status, created_at, closed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        p.get("id"),
-                        p["bot_id"],
-                        p["market"],
-                        p["order_uuid"],
-                        str(p["volume"]),
-                        float(p["avg_buy_price"]),
-                        math.floor(float(p["buy_amount"])),
-                        float(p.get("buy_fee", 0.0)),
-                        int(p["trade_id"]),
-                        p.get("status", "OPEN"),
-                        p["created_at"],
-                        p.get("closed_at"),
-                    ),
-                )
+            seen_pos_uuids = set()
+            for idx, p in enumerate(payload.get("bot_positions", [])):
+                raw_uuid = str(p.get("order_uuid") or "").strip()
+                if not raw_uuid:
+                    raw_uuid = f"restored-pos-{p.get('id') or (idx + 1)}-{int(datetime.now().timestamp())}"
+                if raw_uuid in seen_pos_uuids:
+                    raw_uuid = f"{raw_uuid}-dup-{p.get('id') or (idx + 1)}"
+                seen_pos_uuids.add(raw_uuid)
+
+                pos_id = p.get("id")
+                if pos_id is not None:
+                    tx.execute(
+                        """
+                        INSERT OR REPLACE INTO bot_positions (
+                            id, bot_id, market, order_uuid, volume,
+                            avg_buy_price, buy_amount, buy_fee, trade_id,
+                            status, created_at, closed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            pos_id,
+                            p["bot_id"],
+                            p["market"],
+                            raw_uuid,
+                            str(p["volume"]),
+                            float(p["avg_buy_price"]),
+                            math.floor(float(p["buy_amount"])),
+                            float(p.get("buy_fee", 0.0)),
+                            int(p["trade_id"]),
+                            p.get("status", "OPEN"),
+                            p.get("created_at") or now_str,
+                            p.get("closed_at"),
+                        ),
+                    )
+                else:
+                    tx.execute(
+                        """
+                        INSERT INTO bot_positions (
+                            bot_id, market, order_uuid, volume,
+                            avg_buy_price, buy_amount, buy_fee, trade_id,
+                            status, created_at, closed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            p["bot_id"],
+                            p["market"],
+                            raw_uuid,
+                            str(p["volume"]),
+                            float(p["avg_buy_price"]),
+                            math.floor(float(p["buy_amount"])),
+                            float(p.get("buy_fee", 0.0)),
+                            int(p["trade_id"]),
+                            p.get("status", "OPEN"),
+                            p.get("created_at") or now_str,
+                            p.get("closed_at"),
+                        ),
+                    )
 
         self.check_and_halt_if_zero_balance()
         return {

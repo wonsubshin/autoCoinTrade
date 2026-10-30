@@ -1763,24 +1763,64 @@ const server = http.createServer(async (req, res) => {
           t.status || "HOLDING"
         );
       }
-      for (const p of payload.bot_positions || []) {
-        db.prepare(`
-          INSERT INTO bot_positions (
-            id, bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at, closed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          p.id,
-          p.bot_id,
-          p.order_uuid,
-          String(p.volume),
-          Number(p.avg_buy_price),
-          Math.floor(Number(p.buy_amount)),
-          Number(p.buy_fee || 0),
-          Number(p.trade_id),
-          p.status || "OPEN",
-          p.created_at,
-          p.closed_at ?? null
-        );
+      const seenPositionOrderUuids = new Set();
+      const seenPositionIds = new Set();
+      for (let idx = 0; idx < (payload.bot_positions || []).length; idx++) {
+        const p = payload.bot_positions[idx];
+
+        // order_uuid 고유성 보장 (null/빈값 처리 및 중복 발생 시 접미사 부여로 UNIQUE constraint 위반 방어)
+        let safeOrderUuid = (p.order_uuid !== null && p.order_uuid !== undefined) ? String(p.order_uuid).trim() : "";
+        if (!safeOrderUuid) {
+          safeOrderUuid = `restored-pos-${p.id || (idx + 1)}-${Date.now()}`;
+        }
+        if (seenPositionOrderUuids.has(safeOrderUuid)) {
+          safeOrderUuid = `${safeOrderUuid}-dup-${p.id || (idx + 1)}`;
+        }
+        seenPositionOrderUuids.add(safeOrderUuid);
+
+        let posId = p.id !== null && p.id !== undefined ? Number(p.id) : null;
+        if (posId !== null && seenPositionIds.has(posId)) {
+          posId = null;
+        }
+        if (posId !== null) {
+          seenPositionIds.add(posId);
+          db.prepare(`
+            INSERT OR REPLACE INTO bot_positions (
+              id, bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at, closed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            posId,
+            p.bot_id,
+            p.market,
+            safeOrderUuid,
+            String(p.volume),
+            Number(p.avg_buy_price),
+            Math.floor(Number(p.buy_amount)),
+            Number(p.buy_fee || 0),
+            Number(p.trade_id),
+            p.status || "OPEN",
+            p.created_at || now,
+            p.closed_at ?? null
+          );
+        } else {
+          db.prepare(`
+            INSERT INTO bot_positions (
+              bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at, closed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            p.bot_id,
+            p.market,
+            safeOrderUuid,
+            String(p.volume),
+            Number(p.avg_buy_price),
+            Math.floor(Number(p.buy_amount)),
+            Number(p.buy_fee || 0),
+            Number(p.trade_id),
+            p.status || "OPEN",
+            p.created_at || now,
+            p.closed_at ?? null
+          );
+        }
       }
       checkAndHaltIfZeroBalance();
       return sendJson(res, 200, {
