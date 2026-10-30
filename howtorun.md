@@ -42,33 +42,32 @@ autoCoindTrade/
 
 ## 2. 최초 1회 사전 설치 방법
 
-### 2.1 Python 백엔드 패키지 설치
-프로젝트 루트(`d:\dev\sourceCode\testbad\autoCoindTrade`)에서 터미널(PowerShell 또는 CMD)을 열고 아래 명령어를 실행합니다.
-
-```powershell
-# (선택) 가상환경 생성 및 활성화
-python -m venv .venv
-.\.venv\Scripts\activate
-
-# 필수 패키지 설치
-pip install -r backend/requirements.txt
+### 방법 1: `setup.bat` 원클릭 환경 구축 (권장)
+프로젝트 루트에서 `setup.bat`을 실행합니다. Node.js 버전 확인, 디렉토리 생성, 설정 템플릿 복사, 프론트엔드 패키지 설치가 자동으로 진행됩니다.
+```cmd
+.\setup.bat
 ```
 
-### 2.2 React 프론트엔드 패키지 설치
-`frontend` 폴더로 이동하여 Node.js 패키지를 설치합니다.
-
-```powershell
-cd frontend
-npm install
-cd ..
-```
+### 방법 2: 수동 설치
+1. **Node.js 22 LTS (v22.5.0 이상)** 확인:
+   백엔드가 내장 SQLite 모듈(`node:sqlite`)을 사용하므로 Node.js v22.5.0 이상이 필요합니다.
+   ```powershell
+   node -v
+   ```
+2. **프론트엔드 패키지 설치**:
+   ```powershell
+   cd frontend
+   npm install
+   cd ..
+   ```
+   *(백엔드는 Node.js 내장 표준 라이브러리만 사용하므로 별도의 npm install이 필요 없습니다.)*
 
 ---
 
-## 3. 업비트 Open API Key 설정 방법 (`config/upbit_config.json`)
+## 3. 업비트 Open API 및 Gemini Key 설정 방법 (`config/upbit_config.json`)
 
-1. `config/upbit_config.json` 파일을 엽니다. (파일이 없다면 `config/upbit_config.example.json`을 복사하여 `config/upbit_config.json`으로 생성합니다.)
-2. 본인의 업비트 Open API `access_key`와 `secret_key`를 입력합니다.
+1. `config/upbit_config.json` 파일을 엽니다. (파일이 없다면 `config/upbit_config.example.json`을 복사하여 생성합니다.)
+2. 본인의 업비트 Open API `access_key`와 `secret_key`, Google `gemini_api_key`를 입력합니다.
 
 ```json
 {
@@ -76,58 +75,52 @@ cd ..
   "secret_key": "여기에_업비트_SECRET_KEY_입력",
   "trade_mode": "paper",
   "request_timeout_sec": 5.0,
-  "delay_threshold_ms": 800
+  "delay_threshold_ms": 800,
+  "gemini_api_key": "여기에_GOOGLE_GEMINI_API_KEY_입력"
 }
 ```
 
 - **`trade_mode` 옵션 안내**:
   - `"paper"`: 로컬 시뮬레이션(모의) 안전 모드로 동작합니다. 실제 업비트 계좌의 돈을 쓰지 않고 실시간 시세 기반으로 가상 매수/매도 및 DB 검증을 안전하게 수행합니다.
   - `"live"`: 입력된 업비트 Open API Key를 사용하여 **실제 업비트 시장가 매수/매도 주문**을 실행합니다.
+- **`gemini_api_key`**:
+  - Google Gemini 3.5 Flash 실시간 AI 마켓 브리핑 기능에 사용됩니다. 웹 UI 상단의 `[⚙️ API 키 등록]` 버튼을 통해서도 바로 등록/저장할 수 있습니다.
 - **Git Push 제외 보안 규칙**:
   - `.gitignore`에 `config/upbit_config.json`이 등록되어 있어 커밋/푸시 시 개인 API Key가 외부로 유출되지 않습니다.
-  - 만약 최초 커밋에 포함시킨 뒤 이후 로컬 수정분을 Git Push에서 영구 제외하고 싶다면 아래 명령어를 실행하세요:
-    ```powershell
-    git update-index --skip-worktree config/upbit_config.json
-    ```
 
 ---
 
 ## 4. 프로그램 실행 방법 (How to Run)
 
-### 방법 A: 원클릭 배치 파일로 실행 (`start.bat` 권장)
-탐색기에서 `start.bat` 파일을 더블클릭하거나 터미널에서 실행합니다.
+### 방법 A: 무음 백그라운드 서비스 실행 (`start_services.bat` 권장)
+탐색기에서 `start_services.bat` (또는 `start.bat`)을 더블클릭하거나 터미널에서 실행합니다.
 ```powershell
-.\start.bat
+.\start_services.bat
 ```
-- 백엔드 서버(`http://127.0.0.1:8001`)와 프론트엔드 개발 서버(`http://localhost:9000`)가 각각의 콘솔 창으로 실행됩니다.
+- 백엔드 서버(`http://127.0.0.1:8001`)와 프론트엔드 개발 서버(`http://localhost:9000`)가 윈도우 백그라운드에서 실행됩니다.
+- 웹 브라우저에서 **`http://localhost:9000`** 접속 (입장 코드: `sws@2129`).
 
-### 방법 B: 터미널에서 수동으로 각각 실행
+### 방법 B: 터미널에서 수동으로 각각 실행 (디버깅 / 실시간 로그 확인용)
 1. **터미널 1 (Backend 실행)**:
    ```powershell
-   python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
+   node backend/node_server.mjs
    ```
 2. **터미널 2 (Frontend 실행)**:
    ```powershell
    cd frontend
    npm run dev
    ```
-3. 웹 브라우저에서 **`http://localhost:9000`** 으로 접속합니다.
 
 ---
 
 ## 5. 프로그램 종료 방법 (How to Stop)
 
-### 방법 A: 원클릭 종료 스크립트 실행 (`stop.bat` 권장)
-탐색기에서 `stop.bat`을 더블클릭하거나 터미널에서 실행하면 백엔드(`8001` 포트)와 프론트엔드(`9000` 포트) 프로세스를 모두 찾아 안전하게 종료합니다.
+### 방법 A: 원클릭 종료 스크립트 실행 (`stop_services.bat` 권장)
 ```powershell
-.\stop.bat
+.\stop_services.bat
+# 또는 .\stop.bat
 ```
-- 종료 시 FastAPI의 `lifespan` 종료 훅이 호출되어 `bot_orchestrator` 백그라운드 워커가 진행 중인 트랜잭션을 마무리하고 안전하게 정지(Graceful Shutdown)합니다.
-
-### 방법 B: 터미널에서 수동 종료
-- 실행 중인 프론트엔드/백엔드 터미널 창에서 `Ctrl + C`를 누른 뒤 `Y`를 입력하여 종료합니다.
-
----
+- 포트 `8001`과 `9000`을 점유 중인 프로세스를 안전하게 종료합니다.
 
 ## 6. 웹 화면 사용 가이드
 
