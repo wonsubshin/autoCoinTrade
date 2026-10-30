@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const API_BASE = "http://localhost:8001";
+const API_BASE = typeof window !== "undefined"
+  ? (window.location.port === "9000"
+      ? ""
+      : `${window.location.protocol}//${window.location.hostname}:8001`)
+  : "http://localhost:8001";
 
 function formatKRW(val) {
   if (val === null || val === undefined || val === "") return "";

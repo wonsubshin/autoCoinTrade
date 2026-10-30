@@ -30,6 +30,8 @@
   .\start_services.bat
   ```
 - **웹 대시보드 접속**: [http://localhost:9000](http://localhost:9000)
+- **외부/스마트폰 접속 (동일 Wi-Fi)**: `http://<서버내부IP>:9000` (예: `http://192.168.0.217:9000`)
+- **외부 인터넷 원클릭 터널 (LTE/외부망)**: `./start_tunnel.sh` (공개 HTTPS 보안 주소 자동 발급)
 - **기본 입장 코드**: `sws@2129`
 - **백엔드 API**: `http://localhost:8001`
 
@@ -98,6 +100,8 @@ autoCoindTrade/
 ├── setup.sh                     # [초기 설정 - Linux] 원클릭 환경 검증 및 패키지 설치
 ├── start_services.sh            # [서비스 시작 - Linux] 백엔드 & 프론트엔드 동시 백그라운드 실행
 ├── stop_services.sh             # [서비스 중지 - Linux] 포트 8001 & 9000 안전 프로세스 종료
+├── start_tunnel.sh              # [외부 접속 터널 - Linux] 스마트폰/외부 어디서나 접속 가능한 HTTPS 주소 생성
+├── stop_tunnel.sh               # [외부 접속 터널 종료 - Linux]
 ├── run_orchestrator.sh          # [Python 오케스트레이터 - Linux]
 ├── setup.bat                    # [초기 설정 - Windows] 원클릭 환경 검증 및 npm 패키지 설치
 ├── start_services.bat           # [서비스 시작 - Windows] 백엔드 & 프론트엔드 동시 백그라운드 실행
