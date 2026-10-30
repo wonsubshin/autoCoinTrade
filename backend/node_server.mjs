@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { pgSyncManager } from "./common/pg_sync.mjs";
+import { syncNewsToDatabase, queryNewsList } from "./common/news_service.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -129,6 +130,18 @@ function initializeDatabase() {
       briefing_text TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS crypto_news (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      link TEXT NOT NULL UNIQUE,
+      source TEXT NOT NULL,
+      published_at TEXT NOT NULL,
+      summary TEXT,
+      sentiment TEXT NOT NULL DEFAULT 'NEUTRAL',
+      keywords TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_crypto_news_pubdate ON crypto_news (published_at DESC);
   `);
 
   // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-* / auto-bid-*) 가상 이력 제거
@@ -1830,6 +1843,26 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (pathname === "/api/news" && req.method === "GET") {
+      const page = Number(parsedUrl.searchParams.get("page") || 1);
+      const limit = Number(parsedUrl.searchParams.get("limit") || 50);
+      const keyword = parsedUrl.searchParams.get("keyword") || "";
+      const startDate = parsedUrl.searchParams.get("start_date") || "";
+      const endDate = parsedUrl.searchParams.get("end_date") || "";
+
+      const result = queryNewsList(db, { page, limit, keyword, startDate, endDate });
+      return sendJson(res, 200, result);
+    }
+
+    if (pathname === "/api/news/refresh" && req.method === "POST") {
+      try {
+        const count = await syncNewsToDatabase(db);
+        return sendJson(res, 200, { success: true, newly_inserted: count });
+      } catch (err) {
+        return sendJson(res, 500, { detail: `뉴스 수집 실패: ${err.message}` });
+      }
+    }
+
     return sendJson(res, 404, { detail: "Not Found" });
   } catch (err) {
     return sendJson(res, 500, { detail: err.message });
@@ -2773,9 +2806,25 @@ setTimeout(async () => {
   } catch (err) {
     console.warn("[PgSync] Background sync init error:", err.message);
   }
+
+  // 초기 암호화폐 뉴스 실시간 수집 및 감성 분석
+  try {
+    syncNewsToDatabase(getDb()).catch((err) => console.warn("[News] Initial sync error:", err.message));
+  } catch {}
+
   await reconcileOpenPositionsWithUpbit();
   await runBotStrategiesCycle();
 }, 1000);
 setInterval(runBotStrategiesCycle, 10000);
+
+// 30분 간격 암호화폐 뉴스 백그라운드 자동 수집
+setInterval(() => {
+  try {
+    const db = getDb();
+    if (db) {
+      syncNewsToDatabase(db).catch((err) => console.warn("[News] Periodic sync error:", err.message));
+    }
+  } catch {}
+}, 30 * 60 * 1000);
 
 

@@ -184,6 +184,43 @@ export class PgSyncManager {
           ]
         );
       }
+
+      // 5. crypto_news
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS crypto_news (
+          id SERIAL PRIMARY KEY,
+          title TEXT NOT NULL,
+          link TEXT NOT NULL UNIQUE,
+          source TEXT NOT NULL,
+          published_at TEXT NOT NULL,
+          summary TEXT,
+          sentiment VARCHAR(20) NOT NULL DEFAULT 'NEUTRAL',
+          keywords TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pg_crypto_news_pubdate ON crypto_news (published_at DESC);
+      `);
+
+      try {
+        const newsList = sqliteDb.prepare("SELECT * FROM crypto_news ORDER BY id DESC LIMIT 200").all();
+        for (const n of newsList) {
+          await this.pool.query(
+            `INSERT INTO crypto_news (
+               title, link, source, published_at, summary, sentiment, keywords, created_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (link) DO UPDATE SET
+               title = EXCLUDED.title,
+               summary = EXCLUDED.summary,
+               sentiment = EXCLUDED.sentiment,
+               keywords = EXCLUDED.keywords`,
+            [
+              n.title, n.link, n.source, n.published_at,
+              n.summary || "", n.sentiment || "NEUTRAL",
+              n.keywords || "", n.created_at
+            ]
+          );
+        }
+      } catch {}
     } catch (err) {
       console.warn(`[PgSync] Sync error: ${err.message}`);
     }

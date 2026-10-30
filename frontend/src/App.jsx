@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 
 const API_BASE = "";
 
@@ -479,6 +479,18 @@ export default function App() {
   const typingTimerRef = useRef(null);
   const isStreamDoneRef = useRef(false);
 
+  // 8) 뉴스 피드 상태 (요구사항: 50건 페이지네이션, 날짜/키워드 검색)
+  const [newsList, setNewsList] = useState([]);
+  const [newsTotal, setNewsTotal] = useState(0);
+  const [newsPage, setNewsPage] = useState(1);
+  const [newsTotalPages, setNewsTotalPages] = useState(1);
+  const [newsKeyword, setNewsKeyword] = useState("");
+  const [newsStartDate, setNewsStartDate] = useState("");
+  const [newsEndDate, setNewsEndDate] = useState("");
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsRefreshing, setNewsRefreshing] = useState(false);
+  const [newsNotice, setNewsNotice] = useState("");
+
   // 한 글자씩 부드럽게 화면에 타이핑해주는 이펙트
   useEffect(() => {
     if (!isStreaming) {
@@ -891,7 +903,10 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem("autoCoinTrade_menu", activeMenu);
     localStorage.setItem("autoCoinTrade_menu", activeMenu);
-  }, [activeMenu]);
+    if (activeMenu === "news") {
+      fetchNews(1);
+    }
+  }, [activeMenu, fetchNews]);
 
   useEffect(() => {
     sessionStorage.setItem("autoCoinTrade_bot", selectedBotId);
@@ -902,6 +917,77 @@ export default function App() {
     sessionStorage.setItem("autoCoinTrade_statsTab", statsPeriodTab);
     localStorage.setItem("autoCoinTrade_statsTab", statsPeriodTab);
   }, [statsPeriodTab]);
+
+  // 뉴스 목록 조회 (한 페이지 50건, 날짜/키워드 검색)
+  const fetchNews = useCallback(
+    async (page = 1, options = {}) => {
+      setNewsLoading(true);
+      try {
+        const kw = options.keyword !== undefined ? options.keyword : newsKeyword;
+        const sDate = options.startDate !== undefined ? options.startDate : newsStartDate;
+        const eDate = options.endDate !== undefined ? options.endDate : newsEndDate;
+
+        const params = new URLSearchParams();
+        params.append("page", String(page));
+        params.append("limit", "50");
+        if (kw && kw.trim()) params.append("keyword", kw.trim());
+        if (sDate) params.append("start_date", sDate);
+        if (eDate) params.append("end_date", eDate);
+
+        const resp = await fetch(`${API_BASE}/api/news?${params.toString()}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          setNewsList(data.items || []);
+          setNewsTotal(data.total || 0);
+          setNewsPage(data.page || 1);
+          setNewsTotalPages(data.total_pages || 1);
+        }
+      } catch (err) {
+        console.warn("Failed to fetch news:", err);
+      } finally {
+        setNewsLoading(false);
+      }
+    },
+    [newsKeyword, newsStartDate, newsEndDate]
+  );
+
+  const handleSearchNews = (e) => {
+    if (e) e.preventDefault();
+    fetchNews(1);
+  };
+
+  const handleResetNewsFilter = () => {
+    setNewsKeyword("");
+    setNewsStartDate("");
+    setNewsEndDate("");
+    fetchNews(1, { keyword: "", startDate: "", endDate: "" });
+  };
+
+  const handleQuickTagClick = (tag) => {
+    const cleanTag = tag.replace(/^#/, "");
+    setNewsKeyword(cleanTag);
+    fetchNews(1, { keyword: cleanTag });
+  };
+
+  const handleRefreshNews = async () => {
+    setNewsRefreshing(true);
+    setNewsNotice("최신 뉴스를 실시간 수집 및 감성 분석 중입니다...");
+    try {
+      const resp = await fetch(`${API_BASE}/api/news/refresh`, { method: "POST" });
+      if (resp.ok) {
+        const data = await resp.json();
+        setNewsNotice(`뉴스 수집 완료: 신규 ${data.newly_inserted || 0}건 추가`);
+        await fetchNews(1);
+      } else {
+        setNewsNotice("뉴스 수집 요청 중 오류가 발생했습니다.");
+      }
+    } catch (err) {
+      setNewsNotice(`뉴스 수집 중 오류: ${err.message}`);
+    } finally {
+      setNewsRefreshing(false);
+      setTimeout(() => setNewsNotice(""), 6000);
+    }
+  };
 
   // 메뉴 전환 시 처리 (거래현황 진입 시 잔고 0 이하 여부 즉시 체크하여 모달 표기)
   const handleMenuChange = (menuKey) => {
@@ -914,6 +1000,8 @@ export default function App() {
       fetchTrades(selectedBotId);
     } else if (menuKey === "stats") {
       fetchStatistics();
+    } else if (menuKey === "news") {
+      fetchNews(1);
     } else if (menuKey === "settings") {
       fetchOverviewAndBots(false);
       fetchUpbitAccount();
@@ -1231,6 +1319,13 @@ export default function App() {
           >
             <span>📈</span>
             <span>통계</span>
+          </button>
+          <button
+            className={`menu-btn ${activeMenu === "news" ? "active" : ""}`}
+            onClick={() => handleMenuChange("news")}
+          >
+            <span>📰</span>
+            <span>뉴스</span>
           </button>
           <button
             className={`menu-btn ${activeMenu === "settings" ? "active" : ""}`}
@@ -2046,6 +2141,387 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================
+            [메뉴] 실시간 뉴스 피드 & LLM 감성 분석 (50건 페이지네이션, 날짜/키워드 검색)
+           ============================================================ */}
+        {activeMenu === "news" && (
+          <div>
+            <div className="page-header">
+              <div>
+                <h2 className="page-title">실시간 뉴스 & LLM 감성 피드</h2>
+                <p className="page-desc">
+                  주요 가상자산 언론사 및 구글 뉴스를 실시간 수집하고 호재(상승)/악재(하락)/중립 감성 분석 및 키워드를 태깅합니다.
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                {newsNotice && (
+                  <span style={{ fontSize: "13px", color: "#38bdf8", fontWeight: 600 }}>
+                    {newsNotice}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleRefreshNews}
+                  disabled={newsRefreshing}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                >
+                  <span>{newsRefreshing ? "⏳" : "🔄"}</span>
+                  <span>{newsRefreshing ? "뉴스 수집 중..." : "최신 뉴스 즉시 수집"}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 검색 및 필터 카드 (날짜 범위, 키워드 검색, 태그 필터) */}
+            <div className="card" style={{ marginBottom: "16px" }}>
+              <form onSubmit={handleSearchNews}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "flex-end" }}>
+                  {/* 날짜 범위: 시작일 */}
+                  <div style={{ flex: "1 1 140px", minWidth: "140px" }}>
+                    <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" }}>
+                      📅 시작일
+                    </label>
+                    <input
+                      type="date"
+                      className="form-input"
+                      style={{ width: "100%", padding: "8px 10px", fontSize: "13px" }}
+                      value={newsStartDate}
+                      onChange={(e) => setNewsStartDate(e.target.value)}
+                    />
+                  </div>
+
+                  {/* 날짜 범위: 종료일 */}
+                  <div style={{ flex: "1 1 140px", minWidth: "140px" }}>
+                    <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" }}>
+                      📅 종료일
+                    </label>
+                    <input
+                      type="date"
+                      className="form-input"
+                      style={{ width: "100%", padding: "8px 10px", fontSize: "13px" }}
+                      value={newsEndDate}
+                      onChange={(e) => setNewsEndDate(e.target.value)}
+                    />
+                  </div>
+
+                  {/* 키워드 검색창 */}
+                  <div style={{ flex: "3 1 260px", minWidth: "220px" }}>
+                    <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" }}>
+                      🔍 키워드 검색 (제목, 요약, 언론사, 해시태그)
+                    </label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ width: "100%", padding: "8px 12px", fontSize: "13px" }}
+                      placeholder="검색어 입력 (예: 비트코인, 업비트, ETF, 급등, SEC, 해킹...)"
+                      value={newsKeyword}
+                      onChange={(e) => setNewsKeyword(e.target.value)}
+                    />
+                  </div>
+
+                  {/* 검색 & 초기화 버튼 */}
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      type="submit"
+                      className="btn btn-primary"
+                      style={{ padding: "8px 16px", fontSize: "13px" }}
+                    >
+                      검색
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={handleResetNewsFilter}
+                      style={{ padding: "8px 14px", fontSize: "13px" }}
+                    >
+                      초기화
+                    </button>
+                  </div>
+                </div>
+
+                {/* 추천 키워드 태그 클릭 바로가기 */}
+                <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>인기 태그:</span>
+                  {[
+                    "#비트코인",
+                    "#이더리움",
+                    "#업비트",
+                    "#리플",
+                    "#솔라나",
+                    "#ETF",
+                    "#규제/정책",
+                    "#시황/전망",
+                    "#해킹/보안",
+                    "상승",
+                    "하락",
+                  ].map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => handleQuickTagClick(tag)}
+                      style={{
+                        background: "rgba(38, 50, 77, 0.6)",
+                        border: "1px solid var(--border-color)",
+                        borderRadius: "14px",
+                        padding: "3px 10px",
+                        fontSize: "12px",
+                        color: "#93c5fd",
+                        cursor: "pointer",
+                        transition: "all 0.15s ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = "rgba(99, 102, 241, 0.3)";
+                        e.currentTarget.style.borderColor = "var(--accent-indigo)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "rgba(38, 50, 77, 0.6)";
+                        e.currentTarget.style.borderColor = "var(--border-color)";
+                      }}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              </form>
+            </div>
+
+            {/* 뉴스 목록 테이블 카드 (한 화면 50건) */}
+            <div className="card">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                <span style={{ fontSize: "14px", color: "var(--text-secondary)" }}>
+                  총 <strong style={{ color: "#f8fafc" }}>{newsTotal.toLocaleString()}</strong>건의 뉴스 중{" "}
+                  {newsTotal > 0 ? (
+                    <>
+                      <strong style={{ color: "var(--accent-indigo)" }}>
+                        {(newsPage - 1) * 50 + 1} ~ {Math.min(newsPage * 50, newsTotal)}
+                      </strong>
+                      건 표시 (페이지 {newsPage} / {newsTotalPages}, 한 화면 50건)
+                    </>
+                  ) : (
+                    "0건 표시"
+                  )}
+                </span>
+                {newsLoading && (
+                  <span style={{ fontSize: "13px", color: "var(--accent-indigo)" }}>
+                    ⏳ 목록 조회 중...
+                  </span>
+                )}
+              </div>
+
+              <div className="table-container">
+                <table className="board-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "55px", textAlign: "center" }}>No</th>
+                      <th style={{ width: "95px", textAlign: "center" }}>감성 분석</th>
+                      <th>기사 제목 및 내용 요약</th>
+                      <th style={{ width: "130px" }}>주요 태그</th>
+                      <th style={{ width: "130px" }}>언론사</th>
+                      <th style={{ width: "150px" }}>발행 일시 (KST)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {newsList.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} style={{ textAlign: "center", padding: "48px 16px", color: "var(--text-secondary)" }}>
+                          {newsLoading
+                            ? "뉴스를 불러오는 중입니다..."
+                            : "등록된 뉴스가 없거나 검색 조건에 일치하는 뉴스가 없습니다. 검색어를 변경하거나 [최신 뉴스 즉시 수집]을 눌러보세요."}
+                        </td>
+                      </tr>
+                    ) : (
+                      newsList.map((item, idx) => {
+                        const itemNumber = (newsPage - 1) * 50 + idx + 1;
+                        const sentiment = item.sentiment || "NEUTRAL";
+                        const isBullish = sentiment === "BULLISH";
+                        const isBearish = sentiment === "BEARISH";
+
+                        return (
+                          <tr key={item.id || item.link || idx}>
+                            <td style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: "12px" }}>
+                              {itemNumber}
+                            </td>
+                            <td style={{ textAlign: "center" }}>
+                              <span
+                                style={{
+                                  display: "inline-block",
+                                  padding: "3px 8px",
+                                  borderRadius: "6px",
+                                  fontSize: "11.5px",
+                                  fontWeight: 700,
+                                  background: isBullish
+                                    ? "rgba(16, 185, 129, 0.15)"
+                                    : isBearish
+                                    ? "rgba(239, 68, 68, 0.15)"
+                                    : "rgba(100, 116, 139, 0.18)",
+                                  color: isBullish
+                                    ? "#34d399"
+                                    : isBearish
+                                    ? "#f87171"
+                                    : "#94a3b8",
+                                  border: `1px solid ${
+                                    isBullish
+                                      ? "rgba(16, 185, 129, 0.35)"
+                                      : isBearish
+                                      ? "rgba(239, 68, 68, 0.35)"
+                                      : "rgba(100, 116, 139, 0.3)"
+                                  }`,
+                                }}
+                              >
+                                {isBullish ? "▲ 호재" : isBearish ? "▼ 악재" : "● 중립"}
+                              </span>
+                            </td>
+                            <td>
+                              <div style={{ marginBottom: "4px" }}>
+                                <a
+                                  href={item.link}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  style={{
+                                    color: "#f1f5f9",
+                                    fontSize: "14px",
+                                    fontWeight: 600,
+                                    textDecoration: "none",
+                                    lineHeight: 1.45,
+                                    wordBreak: "break-word",
+                                  }}
+                                  onMouseEnter={(e) => (e.currentTarget.style.color = "#818cf8")}
+                                  onMouseLeave={(e) => (e.currentTarget.style.color = "#f1f5f9")}
+                                >
+                                  {item.title}
+                                  <span style={{ fontSize: "11px", marginLeft: "4px", color: "#64748b" }}>↗</span>
+                                </a>
+                              </div>
+                              {item.summary && (
+                                <div
+                                  style={{
+                                    fontSize: "12.5px",
+                                    color: "#94a3b8",
+                                    lineHeight: 1.4,
+                                    display: "-webkit-box",
+                                    WebkitLineClamp: 2,
+                                    WebkitBoxOrient: "vertical",
+                                    overflow: "hidden",
+                                  }}
+                                >
+                                  {item.summary}
+                                </div>
+                              )}
+                            </td>
+                            <td>
+                              <span style={{ fontSize: "12px", color: "#38bdf8", wordBreak: "break-word" }}>
+                                {item.keywords || "-"}
+                              </span>
+                            </td>
+                            <td>
+                              <span style={{ fontSize: "12.5px", color: "#cbd5e1" }}>
+                                {item.source || "Google News"}
+                              </span>
+                            </td>
+                            <td>
+                              <span style={{ fontSize: "12px", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
+                                {item.published_at || "-"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* 페이지네이션 컨트롤 (한 화면 50건 단위) */}
+              {newsTotalPages > 1 && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    gap: "6px",
+                    marginTop: "20px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {/* 맨 처음으로 */}
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={newsPage <= 1 || newsLoading}
+                    onClick={() => fetchNews(1)}
+                    style={{ padding: "6px 10px", fontSize: "12px" }}
+                  >
+                    « 처음
+                  </button>
+                  {/* 이전 페이지 */}
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={newsPage <= 1 || newsLoading}
+                    onClick={() => fetchNews(newsPage - 1)}
+                    style={{ padding: "6px 12px", fontSize: "12px" }}
+                  >
+                    ‹ 이전
+                  </button>
+
+                  {/* 페이지 번호 버튼들 (현재 페이지 중심 최대 7개 노출) */}
+                  {(() => {
+                    const pages = [];
+                    const maxButtons = 7;
+                    let start = Math.max(1, newsPage - Math.floor(maxButtons / 2));
+                    let end = Math.min(newsTotalPages, start + maxButtons - 1);
+                    if (end - start + 1 < maxButtons) {
+                      start = Math.max(1, end - maxButtons + 1);
+                    }
+
+                    for (let p = start; p <= end; p++) {
+                      pages.push(
+                        <button
+                          key={p}
+                          type="button"
+                          className={p === newsPage ? "btn btn-primary" : "btn btn-outline"}
+                          disabled={newsLoading}
+                          onClick={() => fetchNews(p)}
+                          style={{
+                            padding: "6px 12px",
+                            fontSize: "12px",
+                            minWidth: "34px",
+                            fontWeight: p === newsPage ? 700 : 500,
+                          }}
+                        >
+                          {p}
+                        </button>
+                      );
+                    }
+                    return pages;
+                  })()}
+
+                  {/* 다음 페이지 */}
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={newsPage >= newsTotalPages || newsLoading}
+                    onClick={() => fetchNews(newsPage + 1)}
+                    style={{ padding: "6px 12px", fontSize: "12px" }}
+                  >
+                    다음 ›
+                  </button>
+                  {/* 맨 끝으로 */}
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={newsPage >= newsTotalPages || newsLoading}
+                    onClick={() => fetchNews(newsTotalPages)}
+                    style={{ padding: "6px 10px", fontSize: "12px" }}
+                  >
+                    마지막 »
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
