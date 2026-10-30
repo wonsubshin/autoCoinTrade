@@ -1,0 +1,172 @@
+import pg from "pg";
+
+const { Pool } = pg;
+
+export class PgSyncManager {
+  constructor(config = {}) {
+    this.host = config.host || process.env.PGHOST || "127.0.0.1";
+    this.port = Number(config.port || process.env.PGPORT || 5432);
+    this.database = config.database || process.env.PGDATABASE || "coin_trader";
+    this.user = config.user || process.env.PGUSER || "coin_trader";
+    this.password = config.password || process.env.PGPASSWORD || "coin123$%^";
+
+    this.pool = null;
+    this.isConnected = false;
+    this.timer = null;
+  }
+
+  async connect() {
+    try {
+      this.pool = new Pool({
+        host: this.host,
+        port: this.port,
+        database: this.database,
+        user: this.user,
+        password: this.password,
+        max: 5,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 3000,
+      });
+
+      const res = await this.pool.query("SELECT NOW()");
+      this.isConnected = true;
+      console.log(`[PgSync] Connected to PostgreSQL '${this.database}' at ${this.host}:${this.port} (${res.rows[0].now})`);
+      return true;
+    } catch (err) {
+      console.warn(`[PgSync] PostgreSQL connection failed: ${err.message}. Running in SQLite-only mode.`);
+      this.isConnected = false;
+      return false;
+    }
+  }
+
+  async syncAll(sqliteDb) {
+    if (!this.isConnected || !this.pool) return;
+
+    try {
+      // 1. system_settings
+      const settings = sqliteDb.prepare("SELECT * FROM system_settings").all();
+      for (const s of settings) {
+        await this.pool.query(
+          `INSERT INTO system_settings (key, value, updated_at)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
+          [s.key, String(s.value), s.updated_at]
+        );
+      }
+
+      // 2. bots
+      const bots = sqliteDb.prepare("SELECT * FROM bots").all();
+      for (const b of bots) {
+        await this.pool.query(
+          `INSERT INTO bots (
+             bot_id, name, nickname, strategy_type, description,
+             allocation_ratio, allocated_capital, virtual_krw, is_running,
+             min_volume_krw, stop_loss_pct, take_profit_pct, config_json,
+             last_status_msg, updated_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+           ON CONFLICT (bot_id) DO UPDATE SET
+             nickname = EXCLUDED.nickname,
+             allocation_ratio = EXCLUDED.allocation_ratio,
+             allocated_capital = EXCLUDED.allocated_capital,
+             virtual_krw = EXCLUDED.virtual_krw,
+             is_running = EXCLUDED.is_running,
+             min_volume_krw = EXCLUDED.min_volume_krw,
+             stop_loss_pct = EXCLUDED.stop_loss_pct,
+             take_profit_pct = EXCLUDED.take_profit_pct,
+             config_json = EXCLUDED.config_json,
+             last_status_msg = EXCLUDED.last_status_msg,
+             updated_at = EXCLUDED.updated_at`,
+          [
+            b.bot_id, b.name, b.nickname, b.strategy_type, b.description || "",
+            Number(b.allocation_ratio || 0), Math.floor(Number(b.allocated_capital || 0)),
+            Math.floor(Number(b.virtual_krw || 0)), Number(b.is_running || 0),
+            Math.floor(Number(b.min_volume_krw || 0)), Number(b.stop_loss_pct || 0),
+            Number(b.take_profit_pct || 0), b.config_json || "{}",
+            b.last_status_msg || "", b.updated_at
+          ]
+        );
+      }
+
+      // 3. trades
+      const trades = sqliteDb.prepare("SELECT * FROM trades").all();
+      for (const t of trades) {
+        await this.pool.query(
+          `INSERT INTO trades (
+             id, bot_id, market, buy_order_uuid, sell_order_uuid,
+             buy_price, buy_volume, buy_amount, buy_date,
+             sell_price, sell_volume, sell_amount, sell_date,
+             profit_krw, profit_pct, status
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+           ON CONFLICT (id) DO UPDATE SET
+             sell_order_uuid = EXCLUDED.sell_order_uuid,
+             sell_price = EXCLUDED.sell_price,
+             sell_volume = EXCLUDED.sell_volume,
+             sell_amount = EXCLUDED.sell_amount,
+             sell_date = EXCLUDED.sell_date,
+             profit_krw = EXCLUDED.profit_krw,
+             profit_pct = EXCLUDED.profit_pct,
+             status = EXCLUDED.status`,
+          [
+            t.id, t.bot_id, t.market, t.buy_order_uuid, t.sell_order_uuid ?? null,
+            Number(t.buy_price), String(t.buy_volume), Math.floor(Number(t.buy_amount)), t.buy_date,
+            t.sell_price !== null && t.sell_price !== undefined ? Number(t.sell_price) : null,
+            t.sell_volume ?? null,
+            t.sell_amount !== null && t.sell_amount !== undefined ? Math.floor(Number(t.sell_amount)) : null,
+            t.sell_date ?? null,
+            t.profit_krw !== null && t.profit_krw !== undefined ? Math.floor(Number(t.profit_krw)) : null,
+            t.profit_pct !== null && t.profit_pct !== undefined ? Number(t.profit_pct) : null,
+            t.status || "HOLDING"
+          ]
+        );
+      }
+
+      // 4. bot_positions
+      const positions = sqliteDb.prepare("SELECT * FROM bot_positions").all();
+      for (const p of positions) {
+        await this.pool.query(
+          `INSERT INTO bot_positions (
+             id, bot_id, market, order_uuid, volume,
+             avg_buy_price, buy_amount, buy_fee, trade_id,
+             status, created_at, closed_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           ON CONFLICT (order_uuid) DO UPDATE SET
+             volume = EXCLUDED.volume,
+             avg_buy_price = EXCLUDED.avg_buy_price,
+             buy_amount = EXCLUDED.buy_amount,
+             buy_fee = EXCLUDED.buy_fee,
+             status = EXCLUDED.status,
+             closed_at = EXCLUDED.closed_at`,
+          [
+            p.id, p.bot_id, p.market, p.order_uuid, String(p.volume),
+            Number(p.avg_buy_price), Math.floor(Number(p.buy_amount)),
+            Number(p.buy_fee || 0), Number(p.trade_id),
+            p.status || "OPEN", p.created_at, p.closed_at ?? null
+          ]
+        );
+      }
+    } catch (err) {
+      console.warn(`[PgSync] Sync error: ${err.message}`);
+    }
+  }
+
+  startAutoSync(getSqliteDbFn, intervalMs = 10000) {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = setInterval(async () => {
+      try {
+        const sqliteDb = getSqliteDbFn();
+        if (sqliteDb) {
+          await this.syncAll(sqliteDb);
+        }
+      } catch (err) {
+        // silent
+      }
+    }, intervalMs);
+  }
+
+  async close() {
+    if (this.timer) clearInterval(this.timer);
+    if (this.pool) await this.pool.end();
+  }
+}
+
+export const pgSyncManager = new PgSyncManager();

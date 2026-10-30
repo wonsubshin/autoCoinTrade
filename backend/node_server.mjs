@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { pgSyncManager } from "./common/pg_sync.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2765,6 +2766,13 @@ async function reconcileOpenPositionsWithUpbit() {
 }
 
 setTimeout(async () => {
+  try {
+    await pgSyncManager.connect();
+    await pgSyncManager.syncAll(getDb());
+    pgSyncManager.startAutoSync(getDb, 10000);
+  } catch (err) {
+    console.warn("[PgSync] Background sync init error:", err.message);
+  }
   await reconcileOpenPositionsWithUpbit();
   await runBotStrategiesCycle();
 }, 1000);

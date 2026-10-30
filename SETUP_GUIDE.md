@@ -250,3 +250,28 @@ copy .env.example .env
 python main_orchestrator.py
 ```
 
+---
+
+## 10. PostgreSQL 16 마이그레이션 및 외부 접속 가이드
+
+SQLite 데이터를 PostgreSQL 16 데이터베이스로 이전하고 외부에서 접속할 때 사용합니다:
+
+### 1단계: PostgreSQL 설정 및 계정 생성
+```bash
+sudo ./scripts/setup_postgresql.sh
+```
+- `listen_addresses = '*'` 및 외부 IP scram-sha-256 비밀번호 인증 활성화
+- 데이터베이스 `coin_trader`, 사용자 `coin_trader` (비밀번호: `coin123$%^`) 자동 구성
+
+### 2단계: SQLite ➡️ PostgreSQL 마이그레이션 실행
+```bash
+python3 scripts/migrate_sqlite_to_pg.py
+```
+- SQLite(`data/auto_coin_trade.db`)의 `system_settings`, `bots`, `trades`, `bot_positions`, `ai_market_briefings` 테이블 및 데이터를 PostgreSQL로 이관
+
+### 3단계: 외부 접속 정보 (DBeaver / DataGrip 등)
+- **로컬 접속**: `127.0.0.1:5432` / DB: `coin_trader` / User: `coin_trader` / PW: `coin123$%^`
+- **동일 Wi-Fi LAN 접속**: `192.168.0.217:5432`
+- **외부 인터넷 공인 IP 접속**: `218.234.55.78:5432` (공유기 5432 포트포워딩 필요)
+
+

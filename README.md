@@ -94,6 +94,8 @@ autoCoindTrade/
 ├── scripts/
 │   ├── run_backend.sh           # [Linux] 백엔드 단독 구동 스크립트
 │   ├── run_frontend.sh          # [Linux] 프론트엔드 단독 구동 스크립트
+│   ├── setup_postgresql.sh      # [PostgreSQL] 외부 접속 및 coin_trader 계정 자동 설정
+│   ├── migrate_sqlite_to_pg.py  # [DB 마이그레이션] SQLite -> PostgreSQL 16 마이그레이션
 │   ├── run_backend.bat          # [Windows] 백엔드 백그라운드 구동 스크립트
 │   ├── run_frontend.bat         # [Windows] 프론트엔드 백그라운드 구동 스크립트
 │   └── start_silent.vbs         # [Windows] 콘솔 창 없는 무음 백그라운드 런처
