@@ -288,7 +288,7 @@ function ProfitLineChart({ series, periodLabel }) {
   );
 }
 
-function MarkdownViewer({ content }) {
+function MarkdownViewer({ content, isStreaming = false }) {
   if (!content) return null;
   const lines = content.split("\n");
   const elements = [];
@@ -355,7 +355,24 @@ function MarkdownViewer({ content }) {
   });
 
   flushList();
-  return <div style={{ fontSize: "13.5px", color: "#e2e8f0" }}>{elements}</div>;
+  return (
+    <div style={{ fontSize: "13.5px", color: "#e2e8f0" }}>
+      {elements}
+      {isStreaming && (
+        <span
+          style={{
+            display: "inline-block",
+            width: "3px",
+            height: "14px",
+            backgroundColor: "#38bdf8",
+            marginLeft: "4px",
+            verticalAlign: "middle",
+            animation: "cursorBlink 0.8s infinite",
+          }}
+        />
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -442,7 +459,7 @@ export default function App() {
   });
   const [zeroBalanceAlerted, setZeroBalanceAlerted] = useState(false);
 
-  // 7) AI 실시간 마켓 브리핑 상태 (Gemini 1.5 Flash)
+  // 7) AI 실시간 마켓 브리핑 상태 (Gemini 3.5 Flash)
   const [aiBriefing, setAiBriefing] = useState({
     has_key: false,
     masked_key: "",
@@ -452,6 +469,40 @@ export default function App() {
   const [aiError, setAiError] = useState("");
   const [aiKeyInput, setAiKeyInput] = useState("");
   const [showAiKeyConfig, setShowAiKeyConfig] = useState(false);
+
+  // 실시간 스트리밍 & 한 글자씩 타이핑(Typewriter) 상태
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
+  const [streamingMeta, setStreamingMeta] = useState(null);
+  const typewriterQueueRef = useRef("");
+  const typingTimerRef = useRef(null);
+  const isStreamDoneRef = useRef(false);
+
+  // 한 글자씩 부드럽게 화면에 타이핑해주는 이펙트
+  useEffect(() => {
+    if (!isStreaming) {
+      if (typingTimerRef.current) clearInterval(typingTimerRef.current);
+      return;
+    }
+
+    typingTimerRef.current = setInterval(() => {
+      if (typewriterQueueRef.current.length > 0) {
+        const qLen = typewriterQueueRef.current.length;
+        // 큐 크기에 따라 1~4글자씩 꺼내어 지연 없이 부드럽게 한 글자씩 타이핑
+        const take = qLen > 80 ? 4 : qLen > 30 ? 2 : 1;
+        const nextChars = typewriterQueueRef.current.slice(0, take);
+        typewriterQueueRef.current = typewriterQueueRef.current.slice(take);
+        setStreamingText((prev) => prev + nextChars);
+      } else if (isStreamDoneRef.current) {
+        clearInterval(typingTimerRef.current);
+        setIsStreaming(false);
+      }
+    }, 18);
+
+    return () => {
+      if (typingTimerRef.current) clearInterval(typingTimerRef.current);
+    };
+  }, [isStreaming]);
 
   const showModal = (title, message, type = "info") => {
     setModalInfo({ open: true, title, message, type });
@@ -476,25 +527,87 @@ export default function App() {
   const triggerAiAnalysis = async () => {
     setAiLoading(true);
     setAiError("");
+    setStreamingText("");
+    setStreamingMeta(null);
+    typewriterQueueRef.current = "";
+    isStreamDoneRef.current = false;
+
     try {
-      const resp = await fetch(`${API_BASE}/api/ai/analyze`, {
+      const resp = await fetch(`${API_BASE}/api/ai/stream-analyze`, {
         method: "POST",
       });
-      const data = await resp.json();
-      if (resp.ok && data.success) {
-        setAiBriefing((prev) => ({
-          ...prev,
-          latest: data.briefing,
-        }));
-      } else {
-        setAiError(data.message || "AI 시황 분석 중 오류가 발생했습니다.");
-        if (data.error === "NO_API_KEY") {
-          setShowAiKeyConfig(true);
+
+      if (!resp.ok) {
+        let errMsg = `분석 요청 실패 (HTTP ${resp.status})`;
+        try {
+          const errData = await resp.json();
+          errMsg = errData.message || errMsg;
+          if (errData.error === "NO_API_KEY") {
+            setShowAiKeyConfig(true);
+          }
+        } catch {}
+        setAiError(errMsg);
+        setAiLoading(false);
+        return;
+      }
+
+      setIsStreaming(true);
+      setAiLoading(false);
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
+      let capturedMeta = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const blocks = sseBuffer.split("\n\n");
+        sseBuffer = blocks.pop() || "";
+
+        for (const block of blocks) {
+          const trimmed = block.trim();
+          if (trimmed.startsWith("data:")) {
+            const jsonStr = trimmed.slice(5).trim();
+            if (!jsonStr) continue;
+            try {
+              const data = JSON.parse(jsonStr);
+              if (data.type === "meta") {
+                capturedMeta = data;
+                setStreamingMeta(data);
+              } else if (data.type === "chunk" && data.text) {
+                typewriterQueueRef.current += data.text;
+              } else if (data.type === "done") {
+                isStreamDoneRef.current = true;
+                setAiBriefing((prev) => ({
+                  ...prev,
+                  latest: {
+                    id: data.id,
+                    provider: "gemini",
+                    model: data.model,
+                    btc_price: capturedMeta?.btc_price,
+                    btc_daily_20ma: capturedMeta?.btc_daily_20ma,
+                    btc_4h_60ma: capturedMeta?.btc_4h_60ma,
+                    regime_status: capturedMeta?.regime_status,
+                    briefing_text: data.full_text,
+                    created_at: data.created_at,
+                  },
+                }));
+              } else if (data.type === "error") {
+                setAiError(data.message || "스트리밍 중 오류가 발생했습니다.");
+                isStreamDoneRef.current = true;
+              }
+            } catch {}
+          }
         }
       }
+
+      isStreamDoneRef.current = true;
     } catch (err) {
       setAiError(`서버 연결 오류: ${err.message}`);
-    } finally {
+      setIsStreaming(false);
       setAiLoading(false);
     }
   };
@@ -1325,16 +1438,29 @@ export default function App() {
                       fontSize: "13px",
                       fontWeight: 600,
                       borderRadius: "8px",
-                      cursor: aiLoading ? "not-allowed" : "pointer",
+                      cursor: aiLoading || isStreaming ? "not-allowed" : "pointer",
                       display: "flex",
                       alignItems: "center",
                       gap: "6px",
                       boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)",
+                      opacity: aiLoading || isStreaming ? 0.75 : 1,
                     }}
                     onClick={triggerAiAnalysis}
-                    disabled={aiLoading}
+                    disabled={aiLoading || isStreaming}
                   >
-                    {aiLoading ? "Gemini 심층 분석 중..." : "⚡ AI 시황 분석 요청"}
+                    {isStreaming ? (
+                      <>
+                        <span className="spinner" style={{ width: "14px", height: "14px" }} />
+                        실시간 스트리밍 작성 중...
+                      </>
+                    ) : aiLoading ? (
+                      <>
+                        <span className="spinner" style={{ width: "14px", height: "14px" }} />
+                        Gemini 연결 중...
+                      </>
+                    ) : (
+                      <>⚡ AI 시황 분석 요청</>
+                    )}
                   </button>
 
                   <button
@@ -1432,7 +1558,7 @@ export default function App() {
               )}
 
               {/* 아직 API 키가 없고 분석 기록도 없을 때의 안내 */}
-              {!aiBriefing?.has_key && !aiBriefing?.latest && !aiLoading && (
+              {!aiBriefing?.has_key && !aiBriefing?.latest && !aiLoading && !isStreaming && (
                 <div
                   style={{
                     padding: "20px",
@@ -1447,7 +1573,7 @@ export default function App() {
                     Gemini API 키를 등록하고 AI 마켓 브리핑을 시작하세요
                   </div>
                   <div style={{ fontSize: "12.5px", color: "#94a3b8", maxWidth: "600px", margin: "0 auto 14px", lineHeight: "1.5" }}>
-                    비트코인 일봉 20MA, 4시간 60MA 수급 현황과 3개 자동매매 봇들의 진입/대기 이유를 Gemini 1.5 Flash가 실시간으로 분석해 드립니다.
+                    비트코인 일봉 20MA, 4시간 60MA 수급 현황과 3개 자동매매 봇들의 진입/대기 이유를 Gemini 3.5 Flash가 실시간으로 분석해 드립니다.
                   </div>
                   <button
                     type="button"
@@ -1460,7 +1586,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* 로딩 인디케이터 */}
+              {/* 로딩 인디케이터 (스트리밍 시작 전 연결 단계) */}
               {aiLoading && (
                 <div
                   style={{
@@ -1471,50 +1597,63 @@ export default function App() {
                   }}
                 >
                   <div style={{ fontSize: "14px", fontWeight: 600, color: "#f8fafc", marginBottom: "6px" }}>
-                    ⚡ 업비트 실시간 호가 & 봇 지표를 종합 분석 중입니다...
+                    ⚡ 업비트 실시간 호가 & 봇 지표 취합 및 Gemini 연결 중...
                   </div>
                   <div style={{ fontSize: "12px", color: "#94a3b8" }}>
-                    비트코인 이평선 이격도, 변동성 지표, 3개 봇 포지션을 취합하여 Gemini 1.5 Flash로 맞춤형 브리핑을 작성하고 있습니다.
+                    비트코인 이평선 이격도, 변동성 지표, 3개 봇 포지션을 취합하여 맞춤형 스트리밍 브리핑을 준비하고 있습니다.
                   </div>
                 </div>
               )}
 
-              {/* 분석 결과 리포트 표시 */}
-              {!aiLoading && aiBriefing?.latest && (
+              {/* 분석 결과 리포트 표시 (스트리밍 작성 중이거나, 완료된 브리핑이 있을 때) */}
+              {(isStreaming || (!aiLoading && aiBriefing?.latest)) && (
                 <div>
                   {/* 주요 지표 요약 바 */}
-                  <div
-                    style={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: "12px",
-                      marginBottom: "14px",
-                      padding: "10px 14px",
-                      background: "rgba(15, 23, 42, 0.5)",
-                      borderRadius: "8px",
-                      border: "1px solid rgba(255, 255, 255, 0.05)",
-                    }}
-                  >
-                    <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
-                      🪙 <strong style={{ color: "#f8fafc" }}>BTC 현재가:</strong>{" "}
-                      {aiBriefing.latest.btc_price ? Number(aiBriefing.latest.btc_price).toLocaleString("ko-KR") + "원" : "-"}
-                    </div>
-                    <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
-                      📈 <strong style={{ color: "#f8fafc" }}>일봉 20MA:</strong>{" "}
-                      {aiBriefing.latest.btc_daily_20ma ? Math.floor(Number(aiBriefing.latest.btc_daily_20ma)).toLocaleString("ko-KR") + "원" : "-"}
-                    </div>
-                    <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
-                      ⏱️ <strong style={{ color: "#f8fafc" }}>4시간 60MA:</strong>{" "}
-                      {aiBriefing.latest.btc_4h_60ma ? Math.floor(Number(aiBriefing.latest.btc_4h_60ma)).toLocaleString("ko-KR") + "원" : "-"}
-                    </div>
-                    <div style={{ fontSize: "12.5px" }}>
-                      {aiBriefing.latest.regime_status === "HOLD_CASH" ? (
-                        <span style={{ color: "#f87171", fontWeight: 700 }}>🔴 시장체제: 신규매수차단 (현금보유)</span>
-                      ) : (
-                        <span style={{ color: "#4ade80", fontWeight: 700 }}>🟢 시장체제: 정상거래 허용 (상승추세)</span>
-                      )}
-                    </div>
-                  </div>
+                  {(() => {
+                    const currentMeta = isStreaming && streamingMeta ? streamingMeta : aiBriefing?.latest;
+                    if (!currentMeta) return null;
+                    return (
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: "12px",
+                          marginBottom: "14px",
+                          padding: "10px 14px",
+                          background: "rgba(15, 23, 42, 0.5)",
+                          borderRadius: "8px",
+                          border: "1px solid rgba(255, 255, 255, 0.05)",
+                          alignItems: "center",
+                        }}
+                      >
+                        <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                          🪙 <strong style={{ color: "#f8fafc" }}>BTC 현재가:</strong>{" "}
+                          {currentMeta.btc_price ? Number(currentMeta.btc_price).toLocaleString("ko-KR") + "원" : "-"}
+                        </div>
+                        <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                          📈 <strong style={{ color: "#f8fafc" }}>일봉 20MA:</strong>{" "}
+                          {currentMeta.btc_daily_20ma ? Math.floor(Number(currentMeta.btc_daily_20ma)).toLocaleString("ko-KR") + "원" : "-"}
+                        </div>
+                        <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                          ⏱️ <strong style={{ color: "#f8fafc" }}>4시간 60MA:</strong>{" "}
+                          {currentMeta.btc_4h_60ma ? Math.floor(Number(currentMeta.btc_4h_60ma)).toLocaleString("ko-KR") + "원" : "-"}
+                        </div>
+                        <div style={{ fontSize: "12.5px" }}>
+                          {currentMeta.regime_status === "HOLD_CASH" ? (
+                            <span style={{ color: "#f87171", fontWeight: 700 }}>🔴 시장체제: 신규매수차단 (현금보유)</span>
+                          ) : (
+                            <span style={{ color: "#4ade80", fontWeight: 700 }}>🟢 시장체제: 정상거래 허용 (상승추세)</span>
+                          )}
+                        </div>
+                        {isStreaming && (
+                          <div style={{ fontSize: "12px", color: "#38bdf8", marginLeft: "auto", display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span className="spinner" style={{ width: "12px", height: "12px" }} />
+                            한 자씩 실시간 타이핑 중...
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* 마크다운 텍스트 뷰어 */}
                   <div
@@ -1525,7 +1664,10 @@ export default function App() {
                       border: "1px solid rgba(255, 255, 255, 0.04)",
                     }}
                   >
-                    <MarkdownViewer content={aiBriefing.latest.briefing_text} />
+                    <MarkdownViewer
+                      content={isStreaming ? streamingText : aiBriefing?.latest?.briefing_text}
+                      isStreaming={isStreaming}
+                    />
                   </div>
                 </div>
               )}

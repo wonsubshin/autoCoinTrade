@@ -516,3 +516,13 @@ body {
   display: flex;
   justify-content: flex-end;
 }
+
+@keyframes cursorBlink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.1;
+  }
+}
+
