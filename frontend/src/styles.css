@@ -543,4 +543,106 @@ body {
   border-color: var(--accent-indigo);
 }
 
+/* 뉴스 테이블 고정 높이 및 말줄임 (요구사항: row 높이 동일화) */
+.news-board-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.news-board-table tr {
+  height: 48px;
+  max-height: 48px;
+}
+
+.news-board-table th,
+.news-board-table td {
+  height: 48px;
+  max-height: 48px;
+  vertical-align: middle;
+  padding: 0 12px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.news-title-link {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f1f5f9;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-decoration: none;
+  line-height: 48px;
+}
+
+.news-title-link:hover {
+  color: #818cf8;
+}
+
+/* 뉴스 AI 판단 접기/펼치기 및 스트리밍 타이핑 스타일 */
+.news-ai-box {
+  background: radial-gradient(circle at top left, #161e38 0%, #0d1322 100%);
+  border: 1px solid #3730a3;
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.news-ai-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.news-ai-body {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(99, 102, 241, 0.2);
+  line-height: 1.7;
+  font-size: 14px;
+  color: #e2e8f0;
+}
+
+.news-ai-body h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #a5b4fc;
+  margin: 16px 0 8px 0;
+}
+
+.news-ai-body h3 {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: #c7d2fe;
+  margin: 12px 0 6px 0;
+}
+
+.news-ai-body p {
+  margin-bottom: 8px;
+}
+
+.news-ai-body ul {
+  padding-left: 20px;
+  margin-bottom: 12px;
+}
+
+.news-ai-body li {
+  margin-bottom: 5px;
+}
+
+.news-ai-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 16px;
+  background-color: #818cf8;
+  margin-left: 3px;
+  vertical-align: middle;
+  animation: cursorBlink 1s infinite;
+}
+
 

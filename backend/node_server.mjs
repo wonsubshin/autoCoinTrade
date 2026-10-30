@@ -142,6 +142,17 @@ function initializeDatabase() {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_crypto_news_pubdate ON crypto_news (published_at DESC);
+    CREATE TABLE IF NOT EXISTS ai_news_briefings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'gemini',
+      model TEXT NOT NULL DEFAULT 'gemini-3.5-flash-lite',
+      news_count INTEGER NOT NULL DEFAULT 0,
+      bullish_count INTEGER NOT NULL DEFAULT 0,
+      bearish_count INTEGER NOT NULL DEFAULT 0,
+      neutral_count INTEGER NOT NULL DEFAULT 0,
+      briefing_text TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-* / auto-bid-*) 가상 이력 제거
@@ -819,6 +830,18 @@ function getLatestAiBriefing() {
   };
 }
 
+function getLatestAiNewsBriefing() {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM ai_news_briefings ORDER BY id DESC LIMIT 1").get();
+  const apiKey = getGeminiApiKey();
+  const maskedKey = apiKey ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}` : "";
+  return {
+    has_key: !!apiKey,
+    masked_key: maskedKey,
+    latest: row || null,
+  };
+}
+
 async function generateAiMarketAnalysis() {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
@@ -1363,6 +1386,257 @@ ${b.open_positions
   }
 }
 
+async function generateAiNewsAnalysisStream(req, res) {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+    res.end(
+      JSON.stringify({
+        success: false,
+        error: "NO_API_KEY",
+        message: "Gemini API 키가 등록되지 않았습니다. 설정 화면에서 API 키를 등록해주세요.",
+      })
+    );
+    return;
+  }
+
+  const db = getDb();
+  const topNews = db
+    .prepare(
+      "SELECT title, source, published_at, sentiment, keywords, summary FROM crypto_news ORDER BY published_at DESC, id DESC LIMIT 25"
+    )
+    .all();
+
+  const countRow = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN sentiment = 'BULLISH' THEN 1 ELSE 0 END) AS bull,
+      SUM(CASE WHEN sentiment = 'BEARISH' THEN 1 ELSE 0 END) AS bear,
+      SUM(CASE WHEN sentiment = 'NEUTRAL' THEN 1 ELSE 0 END) AS neut
+    FROM crypto_news
+  `).get();
+
+  const totalNews = Number(countRow?.total || 0);
+  const bullCount = Number(countRow?.bull || 0);
+  const bearCount = Number(countRow?.bear || 0);
+  const neutCount = Number(countRow?.neut || 0);
+
+  // 주요 코인 실시간 시세
+  let tickerInfo = "";
+  try {
+    const targetMarkets = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP"];
+    const tResp = await fetch(`https://api.upbit.com/v1/ticker?markets=${targetMarkets.join(",")}`);
+    if (tResp.ok) {
+      const tickers = await tResp.json();
+      tickerInfo = tickers
+        .map(
+          (t) =>
+            `- ${t.market}: 현재가 ${Number(t.trade_price).toLocaleString("ko-KR")}원 (전일대비 ${(
+              Number(t.signed_change_rate) * 100
+            ).toFixed(2)}%)`
+        )
+        .join("\n");
+    }
+  } catch {}
+
+  const newsSummaryList = topNews
+    .map(
+      (n, i) =>
+        `${i + 1}. [${n.sentiment}] ${n.title} (출처: ${n.source}, 일시: ${n.published_at})${
+          n.keywords ? ` [태그: ${n.keywords}]` : ""
+        }`
+    )
+    .join("\n");
+
+  const nowStr = nowKSTString();
+  const prompt = `당신은 대한민국 최고 수준의 가상자산 퀀트 투자 시스템 'Upbit AutoCoinTrade'의 수석 AI 뉴스 & 센티먼트 애널리스트입니다.
+아래는 ${nowStr} 기준, 시스템이 국내외 주요 암호화폐 언론사(Google News, TokenPost 등)로부터 실시간 수집한 최신 뉴스 및 시장 통계 데이터입니다.
+
+### [실시간 수집 뉴스 데이터 및 시장 통계]
+1. 뉴스 감성 통계:
+- 총 수집 뉴스: ${totalNews}건
+- 호재(상승) 감성: ${bullCount}건 (${totalNews > 0 ? ((bullCount / totalNews) * 100).toFixed(1) : 0}%)
+- 악재(하락) 감성: ${bearCount}건 (${totalNews > 0 ? ((bearCount / totalNews) * 100).toFixed(1) : 0}%)
+- 중립(시황) 감성: ${neutCount}건 (${totalNews > 0 ? ((neutCount / totalNews) * 100).toFixed(1) : 0}%)
+
+2. 주요 코인 실시간 시세:
+${tickerInfo || "- 시세 수신 중"}
+
+3. 최근 주요 뉴스 헤드라인 (상위 25건):
+${newsSummaryList}
+
+---
+
+### [작성 요청 가이드라인]
+위 수집된 실시간 뉴스와 감성 데이터를 정밀 분석하여, 투자자가 현재 시장의 핵심 쟁점과 향후 가격 방향성을 한눈에 파악할 수 있도록 마크다운(Markdown) 서식으로 다음 3개 섹션을 명확하고 전문적으로 작성해주세요:
+
+## 1. 📰 실시간 뉴스 핵심 쟁점 및 센티먼트 종합 진단
+- 현재 수집된 뉴스에서 가장 지배적인 이슈(예: 특정 거래소 이슈, 규제/정책, ETF 동향 등)를 명확히 짚어주세요.
+- 호재와 악재의 비중 및 시장 참여자들의 심리(탐욕 vs 공포) 상태를 분석해주세요.
+
+## 2. ⚖️ 시장 충격도 & 단기 시황 전망
+- 수집된 뉴스가 비트코인(BTC) 및 메이저 알트코인에 미치는 실제 파급력(일시적 노이즈 vs 중장기 추세 영향)을 진단해주세요.
+- 단기적으로 주목해야 할 지지선 및 변동성 확대 가능성을 제시해주세요.
+
+## 3. 🎯 퀀트 트레이딩 봇 운용 및 리스크 관리 전략
+- 현재와 같은 뉴스 환경에서 3개 자동매매 봇(변동성 돌파, 듀얼 모멘텀, 볼린저 역추세)이 어떤 포지션을 취해야 하는지 구체적인 가이드를 제공해주세요.
+- 무리한 추격 매수를 자제하고 리스크를 방어해야 하는 이유와 실전 투자 조언을 전달해주세요.
+
+문장은 신뢰감 있고 가독성 높게, 적절한 불릿포인트와 이모지를 활용해주세요.`;
+
+  const candidateModels = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+  ];
+
+  let geminiResp = null;
+  let chosenModel = candidateModels[0];
+
+  for (const model of candidateModels) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(
+        apiKey
+      )}`;
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 8192,
+          },
+        }),
+      });
+      if (resp.ok) {
+        geminiResp = resp;
+        chosenModel = model;
+        break;
+      } else {
+        const errTxt = await resp.text();
+        console.warn(`[Gemini News Stream] Model ${model} failed (HTTP ${resp.status}):`, errTxt);
+      }
+    } catch (e) {
+      console.warn(`[Gemini News Stream] Exception with model ${model}:`, e.message);
+    }
+  }
+
+  if (!geminiResp) {
+    res.writeHead(502, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+    res.end(
+      JSON.stringify({
+        success: false,
+        error: "API_CALL_FAILED",
+        message: "사용 가능한 Gemini 스트리밍 모델 연결에 실패했습니다.",
+      })
+    );
+    return;
+  }
+
+  // SSE 헤더 전송
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "Access-Control-Allow-Origin": "*",
+  });
+
+  // 메타데이터 이벤트 전송
+  res.write(
+    `data: ${JSON.stringify({
+      type: "meta",
+      model: chosenModel,
+      news_count: totalNews,
+      bullish_count: bullCount,
+      bearish_count: bearCount,
+      neutral_count: neutCount,
+      created_at: nowStr,
+    })}\n\n`
+  );
+
+  const reader = geminiResp.body.getReader();
+  const decoder = new TextDecoder();
+  let fullText = "";
+  let sseBuffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+
+      const lines = sseBuffer.split("\n");
+      sseBuffer = lines.pop();
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("data:")) {
+          const jsonStr = trimmed.slice(5).trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const delta = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (delta) {
+              fullText += delta;
+              res.write(`data: ${JSON.stringify({ type: "chunk", text: delta })}\n\n`);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (sseBuffer.trim().startsWith("data:")) {
+      const jsonStr = sseBuffer.trim().slice(5).trim();
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const delta = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (delta) {
+          fullText += delta;
+          res.write(`data: ${JSON.stringify({ type: "chunk", text: delta })}\n\n`);
+        }
+      } catch {}
+    }
+
+    // DB 저장
+    const insertStmt = db.prepare(`
+      INSERT INTO ai_news_briefings (
+        provider, model, news_count, bullish_count, bearish_count, neutral_count, briefing_text, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const info = insertStmt.run(
+      "gemini",
+      chosenModel,
+      totalNews,
+      bullCount,
+      bearCount,
+      neutCount,
+      fullText,
+      nowStr
+    );
+
+    res.write(
+      `data: ${JSON.stringify({
+        type: "done",
+        id: info.lastInsertRowid,
+        model: chosenModel,
+        news_count: totalNews,
+        bullish_count: bullCount,
+        bearish_count: bearCount,
+        neutral_count: neutCount,
+        full_text: fullText,
+        created_at: nowStr,
+      })}\n\n`
+    );
+    res.end();
+  } catch (streamErr) {
+    console.error("Error during streaming Gemini news response:", streamErr);
+    res.write(`data: ${JSON.stringify({ type: "error", message: streamErr.message })}\n\n`);
+    res.end();
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(200, {
@@ -1441,6 +1715,15 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/ai/stream-analyze" && (req.method === "POST" || req.method === "GET")) {
       return generateAiMarketAnalysisStream(req, res);
+    }
+
+    if (pathname === "/api/ai/news-briefing" && req.method === "GET") {
+      const data = getLatestAiNewsBriefing();
+      return sendJson(res, 200, data);
+    }
+
+    if (pathname === "/api/ai/stream-news-analyze" && (req.method === "POST" || req.method === "GET")) {
+      return generateAiNewsAnalysisStream(req, res);
     }
 
     const startStopMatch = pathname.match(/^\/api\/bots\/([^/]+)\/(start|stop)$/);

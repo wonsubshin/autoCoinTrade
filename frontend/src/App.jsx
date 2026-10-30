@@ -491,6 +491,46 @@ export default function App() {
   const [newsRefreshing, setNewsRefreshing] = useState(false);
   const [newsNotice, setNewsNotice] = useState("");
 
+  // 9) 뉴스 기반 AI 종합 판단 및 실시간 스트리밍 상태 (요구사항: 접을 수 있는 영역, 한 글자씩 스트리밍 타이핑)
+  const [isNewsAiExpanded, setIsNewsAiExpanded] = useState(true);
+  const [newsAiLoading, setNewsAiLoading] = useState(false);
+  const [isNewsStreaming, setIsNewsStreaming] = useState(false);
+  const [newsStreamingText, setNewsStreamingText] = useState("");
+  const [newsStreamingMeta, setNewsStreamingMeta] = useState(null);
+  const [newsAiBriefing, setNewsAiBriefing] = useState({
+    has_key: false,
+    masked_key: "",
+    latest: null,
+  });
+  const newsTypewriterQueueRef = useRef("");
+  const newsTypingTimerRef = useRef(null);
+  const isNewsStreamDoneRef = useRef(false);
+
+  // 뉴스 AI 한 글자씩 부드럽게 화면에 타이핑해주는 이펙트
+  useEffect(() => {
+    if (!isNewsStreaming) {
+      if (newsTypingTimerRef.current) clearInterval(newsTypingTimerRef.current);
+      return;
+    }
+
+    newsTypingTimerRef.current = setInterval(() => {
+      if (newsTypewriterQueueRef.current.length > 0) {
+        const qLen = newsTypewriterQueueRef.current.length;
+        const take = qLen > 80 ? 4 : qLen > 30 ? 2 : 1;
+        const nextChars = newsTypewriterQueueRef.current.slice(0, take);
+        newsTypewriterQueueRef.current = newsTypewriterQueueRef.current.slice(take);
+        setNewsStreamingText((prev) => prev + nextChars);
+      } else if (isNewsStreamDoneRef.current) {
+        clearInterval(newsTypingTimerRef.current);
+        setIsNewsStreaming(false);
+      }
+    }, 18);
+
+    return () => {
+      if (newsTypingTimerRef.current) clearInterval(newsTypingTimerRef.current);
+    };
+  }, [isNewsStreaming]);
+
   // 한 글자씩 부드럽게 화면에 타이핑해주는 이펙트
   useEffect(() => {
     if (!isStreaming) {
@@ -948,9 +988,107 @@ export default function App() {
     [newsKeyword, newsStartDate, newsEndDate]
   );
 
+  const fetchNewsAiBriefing = async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/ai/news-briefing`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setNewsAiBriefing(data);
+      }
+    } catch (err) {
+      console.warn("Failed to fetch news AI briefing:", err);
+    }
+  };
+
+  const triggerNewsAiAnalysis = async () => {
+    setIsNewsAiExpanded(true);
+    setNewsAiLoading(true);
+    setNewsStreamingText("");
+    setNewsStreamingMeta(null);
+    newsTypewriterQueueRef.current = "";
+    isNewsStreamDoneRef.current = false;
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/ai/stream-news-analyze`, {
+        method: "POST",
+      });
+
+      if (!resp.ok) {
+        let errMsg = `AI 분석 요청 실패 (HTTP ${resp.status})`;
+        try {
+          const errData = await resp.json();
+          errMsg = errData.message || errMsg;
+          if (errData.error === "NO_API_KEY") {
+            setShowAiKeyConfig(true);
+          }
+        } catch {}
+        setNewsStreamingText(`⚠️ ${errMsg}`);
+        setNewsAiLoading(false);
+        return;
+      }
+
+      setIsNewsStreaming(true);
+      setNewsAiLoading(false);
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const blocks = sseBuffer.split("\n\n");
+        sseBuffer = blocks.pop() || "";
+
+        for (const block of blocks) {
+          const trimmed = block.trim();
+          if (trimmed.startsWith("data:")) {
+            const jsonStr = trimmed.slice(5).trim();
+            if (!jsonStr) continue;
+            try {
+              const data = JSON.parse(jsonStr);
+              if (data.type === "meta") {
+                setNewsStreamingMeta(data);
+              } else if (data.type === "chunk" && data.text) {
+                newsTypewriterQueueRef.current += data.text;
+              } else if (data.type === "done") {
+                isNewsStreamDoneRef.current = true;
+                setNewsAiBriefing((prev) => ({
+                  ...prev,
+                  latest: {
+                    id: data.id,
+                    provider: "gemini",
+                    model: data.model,
+                    news_count: data.news_count,
+                    bullish_count: data.bullish_count,
+                    bearish_count: data.bearish_count,
+                    neutral_count: data.neutral_count,
+                    briefing_text: data.full_text,
+                    created_at: data.created_at,
+                  },
+                }));
+              } else if (data.type === "error") {
+                setNewsStreamingText((prev) => prev + `\n\n[오류] ${data.message || "스트리밍 중단"}`);
+                isNewsStreamDoneRef.current = true;
+              }
+            } catch {}
+          }
+        }
+      }
+      isNewsStreamDoneRef.current = true;
+    } catch (err) {
+      setNewsStreamingText(`⚠️ 서버 연결 오류: ${err.message}`);
+      setIsNewsStreaming(false);
+      setNewsAiLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (activeMenu === "news") {
       fetchNews(1);
+      fetchNewsAiBriefing();
     }
   }, [activeMenu, fetchNews]);
 
@@ -1005,6 +1143,7 @@ export default function App() {
       fetchStatistics();
     } else if (menuKey === "news") {
       fetchNews(1);
+      fetchNewsAiBriefing();
     } else if (menuKey === "settings") {
       fetchOverviewAndBots(false);
       fetchUpbitAccount();
@@ -2149,7 +2288,7 @@ export default function App() {
         )}
 
         {/* ============================================================
-            [메뉴] 실시간 뉴스 피드 & LLM 감성 분석 (50건 페이지네이션, 날짜/키워드 검색)
+            [메뉴] 실시간 뉴스 피드 & LLM 감성 분석 (50건 페이지네이션, 날짜/키워드 검색, AI 뉴스 판단)
            ============================================================ */}
         {activeMenu === "news" && (
           <div>
@@ -2177,6 +2316,138 @@ export default function App() {
                   <span>{newsRefreshing ? "뉴스 수집 중..." : "최신 뉴스 즉시 수집"}</span>
                 </button>
               </div>
+            </div>
+
+            {/* ============================================================
+                요구사항: 뉴스를 기반으로 한 AI 판단 설명 (접을 수 있는 영역 & 한 글자씩 스트리밍 타이핑)
+               ============================================================ */}
+            <div className="news-ai-box">
+              <div className="news-ai-header">
+                <div
+                  style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", flex: 1 }}
+                  onClick={() => setIsNewsAiExpanded((prev) => !prev)}
+                >
+                  <span style={{ fontSize: "22px" }}>🤖</span>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <h3 style={{ fontSize: "16px", fontWeight: 700, margin: 0, color: "#f8fafc" }}>
+                        뉴스 기반 AI 종합 시장 판단 & 퀀트 운용 전략
+                      </h3>
+                      <span
+                        style={{
+                          background: "rgba(99, 102, 241, 0.2)",
+                          color: "#a5b4fc",
+                          padding: "2px 8px",
+                          borderRadius: "6px",
+                          fontSize: "11px",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {isNewsStreaming ? "⚡ 실시간 스트리밍 분석 중" : newsAiBriefing.latest?.model || "Gemini 3.5 Flash Lite"}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: "12px", color: "var(--text-secondary)", margin: "3px 0 0 0" }}>
+                      수집된 {newsTotal > 0 ? `${newsTotal}건` : "최신"} 암호화폐 뉴스 헤드라인과 시장 감성을 분석하여 봇 운용 및 단기/중기 시황을 진단합니다.
+                      {newsAiBriefing.latest?.created_at && ` (최근 분석: ${newsAiBriefing.latest.created_at})`}
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      triggerNewsAiAnalysis();
+                    }}
+                    disabled={isNewsStreaming || newsAiLoading}
+                    style={{
+                      padding: "8px 16px",
+                      fontSize: "13px",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      boxShadow: "0 4px 14px rgba(99, 102, 241, 0.4)",
+                    }}
+                  >
+                    <span>{isNewsStreaming || newsAiLoading ? "⏳" : "⚡"}</span>
+                    <span>{isNewsStreaming ? "AI 분석 스트리밍 중..." : newsAiLoading ? "AI 분석 준비 중..." : "AI 분석하기"}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => setIsNewsAiExpanded((prev) => !prev)}
+                    style={{ padding: "8px 12px", fontSize: "13px" }}
+                  >
+                    {isNewsAiExpanded ? "▲ 접기" : "▼ 펼치기"}
+                  </button>
+                </div>
+              </div>
+
+              {/* 접을 수 있는 본문 영역 */}
+              {isNewsAiExpanded && (
+                <div className="news-ai-body">
+                  {/* 스트리밍 중이거나 방금 스트리밍된 텍스트가 있을 때 */}
+                  {(isNewsStreaming || newsStreamingText) ? (
+                    <div>
+                      {newsStreamingMeta && (
+                        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "14px" }}>
+                          <span style={{ fontSize: "12px", padding: "3px 8px", borderRadius: "6px", background: "rgba(16, 185, 129, 0.15)", color: "#34d399" }}>
+                            ▲ 호재: {newsStreamingMeta.bullish_count}건
+                          </span>
+                          <span style={{ fontSize: "12px", padding: "3px 8px", borderRadius: "6px", background: "rgba(239, 68, 68, 0.15)", color: "#f87171" }}>
+                            ▼ 악재: {newsStreamingMeta.bearish_count}건
+                          </span>
+                          <span style={{ fontSize: "12px", padding: "3px 8px", borderRadius: "6px", background: "rgba(100, 116, 139, 0.2)", color: "#94a3b8" }}>
+                            ● 중립: {newsStreamingMeta.neutral_count}건
+                          </span>
+                        </div>
+                      )}
+                      <div style={{ whiteSpace: "pre-line", wordBreak: "break-word" }}>
+                        {newsStreamingText}
+                        {isNewsStreaming && <span className="news-ai-cursor" />}
+                      </div>
+                    </div>
+                  ) : newsAiBriefing.latest?.briefing_text ? (
+                    <div>
+                      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "14px" }}>
+                        <span style={{ fontSize: "12px", padding: "3px 8px", borderRadius: "6px", background: "rgba(16, 185, 129, 0.15)", color: "#34d399" }}>
+                          ▲ 호재: {newsAiBriefing.latest.bullish_count || 0}건
+                        </span>
+                        <span style={{ fontSize: "12px", padding: "3px 8px", borderRadius: "6px", background: "rgba(239, 68, 68, 0.15)", color: "#f87171" }}>
+                          ▼ 악재: {newsAiBriefing.latest.bearish_count || 0}건
+                        </span>
+                        <span style={{ fontSize: "12px", padding: "3px 8px", borderRadius: "6px", background: "rgba(100, 116, 139, 0.2)", color: "#94a3b8" }}>
+                          ● 중립: {newsAiBriefing.latest.neutral_count || 0}건
+                        </span>
+                        <span style={{ fontSize: "12px", padding: "3px 8px", borderRadius: "6px", background: "rgba(99, 102, 241, 0.15)", color: "#a5b4fc" }}>
+                          모델: {newsAiBriefing.latest.model}
+                        </span>
+                      </div>
+                      <div style={{ whiteSpace: "pre-line", wordBreak: "break-word" }}>
+                        {newsAiBriefing.latest.briefing_text}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: "center", padding: "28px 16px", color: "var(--text-secondary)" }}>
+                      <p style={{ margin: "0 0 12px 0", fontSize: "14px" }}>
+                        아직 생성된 뉴스 종합 분석 리포트가 없습니다.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={triggerNewsAiAnalysis}
+                        disabled={newsAiLoading}
+                        style={{ fontSize: "13px", padding: "8px 18px" }}
+                      >
+                        🤖 지금 AI 실시간 뉴스 종합 분석 시작
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* 검색 및 필터 카드 (날짜 범위, 키워드 검색, 태그 필터) */}
@@ -2292,7 +2563,7 @@ export default function App() {
               </form>
             </div>
 
-            {/* 뉴스 목록 테이블 카드 (한 화면 50건) */}
+            {/* 뉴스 목록 테이블 카드 (한 화면 50건, row 높이 동일화) */}
             <div className="card">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
                 <span style={{ fontSize: "14px", color: "var(--text-secondary)" }}>
@@ -2316,15 +2587,15 @@ export default function App() {
               </div>
 
               <div className="table-container">
-                <table className="board-table">
+                <table className="board-table news-board-table">
                   <thead>
                     <tr>
                       <th style={{ width: "55px", textAlign: "center" }}>No</th>
                       <th style={{ width: "95px", textAlign: "center" }}>감성 분석</th>
-                      <th>기사 제목 및 내용 요약</th>
-                      <th style={{ width: "130px" }}>주요 태그</th>
+                      <th>기사 제목</th>
+                      <th style={{ width: "140px" }}>주요 태그</th>
                       <th style={{ width: "130px" }}>언론사</th>
-                      <th style={{ width: "150px" }}>발행 일시 (KST)</th>
+                      <th style={{ width: "150px", textAlign: "center" }}>발행 일시 (KST)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2354,7 +2625,7 @@ export default function App() {
                                   display: "inline-block",
                                   padding: "3px 8px",
                                   borderRadius: "6px",
-                                  fontSize: "11.5px",
+                                  fontSize: "11px",
                                   fontWeight: 700,
                                   background: isBullish
                                     ? "rgba(16, 185, 129, 0.15)"
@@ -2378,55 +2649,29 @@ export default function App() {
                                 {isBullish ? "▲ 호재" : isBearish ? "▼ 악재" : "● 중립"}
                               </span>
                             </td>
-                            <td>
-                              <div style={{ marginBottom: "4px" }}>
-                                <a
-                                  href={item.link}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  style={{
-                                    color: "#f1f5f9",
-                                    fontSize: "14px",
-                                    fontWeight: 600,
-                                    textDecoration: "none",
-                                    lineHeight: 1.45,
-                                    wordBreak: "break-word",
-                                  }}
-                                  onMouseEnter={(e) => (e.currentTarget.style.color = "#818cf8")}
-                                  onMouseLeave={(e) => (e.currentTarget.style.color = "#f1f5f9")}
-                                >
-                                  {item.title}
-                                  <span style={{ fontSize: "11px", marginLeft: "4px", color: "#64748b" }}>↗</span>
-                                </a>
-                              </div>
-                              {item.summary && (
-                                <div
-                                  style={{
-                                    fontSize: "12.5px",
-                                    color: "#94a3b8",
-                                    lineHeight: 1.4,
-                                    display: "-webkit-box",
-                                    WebkitLineClamp: 2,
-                                    WebkitBoxOrient: "vertical",
-                                    overflow: "hidden",
-                                  }}
-                                >
-                                  {item.summary}
-                                </div>
-                              )}
+                            <td title={item.title + (item.summary ? `\n[요약] ${item.summary}` : "")}>
+                              <a
+                                href={item.link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="news-title-link"
+                              >
+                                {item.title}
+                                <span style={{ fontSize: "11px", marginLeft: "4px", color: "#64748b" }}>↗</span>
+                              </a>
                             </td>
-                            <td>
-                              <span style={{ fontSize: "12px", color: "#38bdf8", wordBreak: "break-word" }}>
+                            <td title={item.keywords || ""}>
+                              <span style={{ fontSize: "12px", color: "#38bdf8" }}>
                                 {item.keywords || "-"}
                               </span>
                             </td>
-                            <td>
+                            <td title={item.source || ""}>
                               <span style={{ fontSize: "12.5px", color: "#cbd5e1" }}>
                                 {item.source || "Google News"}
                               </span>
                             </td>
-                            <td>
-                              <span style={{ fontSize: "12px", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
+                            <td style={{ textAlign: "center" }}>
+                              <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
                                 {item.published_at || "-"}
                               </span>
                             </td>
