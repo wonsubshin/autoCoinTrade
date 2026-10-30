@@ -469,6 +469,7 @@ export default function App() {
   const [aiError, setAiError] = useState("");
   const [aiKeyInput, setAiKeyInput] = useState("");
   const [showAiKeyConfig, setShowAiKeyConfig] = useState(false);
+  const [isAiBriefingExpanded, setIsAiBriefingExpanded] = useState(false);
 
   // 실시간 스트리밍 & 한 글자씩 타이핑(Typewriter) 상태
   const [isStreaming, setIsStreaming] = useState(false);
@@ -525,6 +526,7 @@ export default function App() {
   };
 
   const triggerAiAnalysis = async () => {
+    setIsAiBriefingExpanded(true);
     setAiLoading(true);
     setAiError("");
     setStreamingText("");
@@ -1360,7 +1362,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* AI 실시간 시장 분석 및 봇 진단 카드 (Gemini 1.5 Flash) */}
+            {/* AI 실시간 시장 분석 및 봇 진단 카드 (Gemini 3.5 Flash) */}
             <div
               className="card"
               style={{
@@ -1369,10 +1371,11 @@ export default function App() {
                 border: "1px solid rgba(99, 102, 241, 0.3)",
                 boxShadow: "0 8px 24px -4px rgba(99, 102, 241, 0.12)",
                 borderRadius: "12px",
-                padding: "18px 20px",
+                padding: isAiBriefingExpanded ? "18px 20px" : "12px 18px",
+                transition: "all 0.25s ease-in-out",
               }}
             >
-              {/* 상단 헤더: 타이틀 + 뱃지 + 액션 버튼 */}
+              {/* 상단 헤더: 타이틀 + 뱃지 + 간략정보 + 액션 버튼 */}
               <div
                 style={{
                   display: "flex",
@@ -1380,9 +1383,9 @@ export default function App() {
                   alignItems: "center",
                   flexWrap: "wrap",
                   gap: "12px",
-                  borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
-                  paddingBottom: "12px",
-                  marginBottom: "14px",
+                  borderBottom: isAiBriefingExpanded ? "1px solid rgba(255, 255, 255, 0.08)" : "none",
+                  paddingBottom: isAiBriefingExpanded ? "12px" : "0",
+                  marginBottom: isAiBriefingExpanded ? "14px" : "0",
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
@@ -1396,11 +1399,18 @@ export default function App() {
                       borderRadius: "8px",
                       background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
                       fontSize: "16px",
+                      cursor: "pointer",
                     }}
+                    onClick={() => setIsAiBriefingExpanded((prev) => !prev)}
+                    title={isAiBriefingExpanded ? "분석 영역 접기" : "분석 영역 펼치기"}
                   >
                     🤖
                   </div>
-                  <div>
+                  <div
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setIsAiBriefingExpanded((prev) => !prev)}
+                    title={isAiBriefingExpanded ? "분석 영역 접기" : "분석 영역 펼치기"}
+                  >
                     <span style={{ fontSize: "16px", fontWeight: 700, color: "#f8fafc" }}>
                       AI 실시간 시장 분석 & 봇 진단
                     </span>
@@ -1424,6 +1434,37 @@ export default function App() {
                       (분석 시각: {aiBriefing.latest.created_at})
                     </span>
                   )}
+                  {/* 접혀있을 때 간략 요약 뱃지 표시 */}
+                  {!isAiBriefingExpanded && aiBriefing?.latest && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginLeft: "4px" }}>
+                      <span
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: 700,
+                          padding: "2px 8px",
+                          borderRadius: "6px",
+                          background:
+                            aiBriefing.latest.regime_status === "HOLD_CASH"
+                              ? "rgba(239, 68, 68, 0.2)"
+                              : "rgba(34, 197, 94, 0.2)",
+                          color:
+                            aiBriefing.latest.regime_status === "HOLD_CASH" ? "#f87171" : "#4ade80",
+                          border: `1px solid ${
+                            aiBriefing.latest.regime_status === "HOLD_CASH"
+                              ? "rgba(239, 68, 68, 0.4)"
+                              : "rgba(34, 197, 94, 0.4)"
+                          }`,
+                        }}
+                      >
+                        {aiBriefing.latest.regime_status === "HOLD_CASH" ? "🔴 신규매수차단" : "🟢 정상거래 허용"}
+                      </span>
+                      {aiBriefing.latest.btc_price && (
+                        <span style={{ fontSize: "12px", color: "#cbd5e1" }}>
+                          BTC {Number(aiBriefing.latest.btc_price).toLocaleString("ko-KR")}원
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -1434,8 +1475,8 @@ export default function App() {
                       background: "linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)",
                       color: "#fff",
                       border: "none",
-                      padding: "7px 16px",
-                      fontSize: "13px",
+                      padding: "6px 14px",
+                      fontSize: "12.5px",
                       fontWeight: 600,
                       borderRadius: "8px",
                       cursor: aiLoading || isStreaming ? "not-allowed" : "pointer",
@@ -1450,12 +1491,12 @@ export default function App() {
                   >
                     {isStreaming ? (
                       <>
-                        <span className="spinner" style={{ width: "14px", height: "14px" }} />
-                        실시간 스트리밍 작성 중...
+                        <span className="spinner" style={{ width: "13px", height: "13px" }} />
+                        실시간 스트리밍 중...
                       </>
                     ) : aiLoading ? (
                       <>
-                        <span className="spinner" style={{ width: "14px", height: "14px" }} />
+                        <span className="spinner" style={{ width: "13px", height: "13px" }} />
                         Gemini 연결 중...
                       </>
                     ) : (
@@ -1467,208 +1508,244 @@ export default function App() {
                     type="button"
                     className="btn btn-secondary"
                     style={{
-                      padding: "7px 12px",
-                      fontSize: "12.5px",
+                      padding: "6px 12px",
+                      fontSize: "12px",
                       background: "rgba(51, 65, 85, 0.6)",
                       border: "1px solid rgba(148, 163, 184, 0.2)",
                     }}
-                    onClick={() => setShowAiKeyConfig((prev) => !prev)}
+                    onClick={() => {
+                      setShowAiKeyConfig((prev) => {
+                        const next = !prev;
+                        if (next) setIsAiBriefingExpanded(true);
+                        return next;
+                      });
+                    }}
                   >
                     ⚙️ {aiBriefing?.has_key ? "API 키 설정됨" : "API 키 등록"}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{
+                      padding: "6px 12px",
+                      fontSize: "12.5px",
+                      fontWeight: 600,
+                      background: isAiBriefingExpanded
+                        ? "rgba(99, 102, 241, 0.25)"
+                        : "rgba(51, 65, 85, 0.7)",
+                      color: isAiBriefingExpanded ? "#c7d2fe" : "#f1f5f9",
+                      border: isAiBriefingExpanded
+                        ? "1px solid rgba(129, 140, 248, 0.5)"
+                        : "1px solid rgba(148, 163, 184, 0.3)",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => setIsAiBriefingExpanded((prev) => !prev)}
+                    title={isAiBriefingExpanded ? "분석 영역 접기" : "분석 영역 펼치기"}
+                  >
+                    {isAiBriefingExpanded ? "▲ 분석 접기" : "▼ 분석 펼치기"}
                   </button>
                 </div>
               </div>
 
-              {/* API 키 설정 패널 (접힘/펼침) */}
-              {showAiKeyConfig && (
-                <div
-                  style={{
-                    background: "rgba(15, 23, 42, 0.6)",
-                    border: "1px solid rgba(148, 163, 184, 0.15)",
-                    borderRadius: "8px",
-                    padding: "14px 16px",
-                    marginBottom: "14px",
-                  }}
-                >
-                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#f8fafc", marginBottom: "6px" }}>
-                    Google Gemini API 키 설정 (Method A)
-                  </div>
-                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "10px", lineHeight: "1.5" }}>
-                    Google AI Studio에서 발급받으신 Gemini API 키를 입력하세요. 저장을 누르시면 프로젝트 내{" "}
-                    <code style={{ color: "#38bdf8" }}>config/upbit_config.json</code>의{" "}
-                    <code style={{ color: "#38bdf8" }}>gemini_api_key</code> 항목에 안전하게 저장됩니다.
-                    {aiBriefing?.has_key && (
-                      <span style={{ color: "#4ade80", marginLeft: "6px", fontWeight: 600 }}>
-                        (현재 등록된 키: {aiBriefing.masked_key})
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", gap: "8px", maxWidth: "600px" }}>
-                    <input
-                      type="password"
-                      placeholder="AIzaSy로 시작하는 Gemini API Key 입력..."
-                      value={aiKeyInput}
-                      onChange={(e) => setAiKeyInput(e.target.value)}
-                      style={{
-                        flex: 1,
-                        padding: "7px 12px",
-                        fontSize: "13px",
-                        background: "#0f172a",
-                        border: "1px solid rgba(148, 163, 184, 0.3)",
-                        borderRadius: "6px",
-                        color: "#fff",
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      style={{ padding: "7px 16px", fontSize: "13px" }}
-                      onClick={handleSaveAiKey}
-                    >
-                      저장
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      style={{ padding: "7px 12px", fontSize: "13px" }}
-                      onClick={() => setShowAiKeyConfig(false)}
-                    >
-                      닫기
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* 에러 메시지 알림 */}
-              {aiError && (
-                <div
-                  style={{
-                    fontSize: "12.5px",
-                    color: "#f87171",
-                    background: "rgba(239, 68, 68, 0.12)",
-                    border: "1px solid rgba(239, 68, 68, 0.3)",
-                    borderRadius: "8px",
-                    padding: "10px 14px",
-                    marginBottom: "14px",
-                    lineHeight: "1.5",
-                  }}
-                >
-                  ⚠️ {aiError}
-                </div>
-              )}
-
-              {/* 아직 API 키가 없고 분석 기록도 없을 때의 안내 */}
-              {!aiBriefing?.has_key && !aiBriefing?.latest && !aiLoading && !isStreaming && (
-                <div
-                  style={{
-                    padding: "20px",
-                    textAlign: "center",
-                    background: "rgba(15, 23, 42, 0.4)",
-                    borderRadius: "8px",
-                    border: "1px dashed rgba(99, 102, 241, 0.3)",
-                  }}
-                >
-                  <div style={{ fontSize: "24px", marginBottom: "8px" }}>💡</div>
-                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#f8fafc", marginBottom: "4px" }}>
-                    Gemini API 키를 등록하고 AI 마켓 브리핑을 시작하세요
-                  </div>
-                  <div style={{ fontSize: "12.5px", color: "#94a3b8", maxWidth: "600px", margin: "0 auto 14px", lineHeight: "1.5" }}>
-                    비트코인 일봉 20MA, 4시간 60MA 수급 현황과 3개 자동매매 봇들의 진입/대기 이유를 Gemini 3.5 Flash가 실시간으로 분석해 드립니다.
-                  </div>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    style={{ padding: "6px 16px", fontSize: "13px" }}
-                    onClick={() => setShowAiKeyConfig(true)}
-                  >
-                    Gemini API 키 등록하기
-                  </button>
-                </div>
-              )}
-
-              {/* 로딩 인디케이터 (스트리밍 시작 전 연결 단계) */}
-              {aiLoading && (
-                <div
-                  style={{
-                    padding: "28px 20px",
-                    textAlign: "center",
-                    background: "rgba(15, 23, 42, 0.4)",
-                    borderRadius: "8px",
-                  }}
-                >
-                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#f8fafc", marginBottom: "6px" }}>
-                    ⚡ 업비트 실시간 호가 & 봇 지표 취합 및 Gemini 연결 중...
-                  </div>
-                  <div style={{ fontSize: "12px", color: "#94a3b8" }}>
-                    비트코인 이평선 이격도, 변동성 지표, 3개 봇 포지션을 취합하여 맞춤형 스트리밍 브리핑을 준비하고 있습니다.
-                  </div>
-                </div>
-              )}
-
-              {/* 분석 결과 리포트 표시 (스트리밍 작성 중이거나, 완료된 브리핑이 있을 때) */}
-              {(isStreaming || (!aiLoading && aiBriefing?.latest)) && (
+              {/* 분석 영역 본문 (접힘/펼침 제어) */}
+              {isAiBriefingExpanded && (
                 <div>
-                  {/* 주요 지표 요약 바 */}
-                  {(() => {
-                    const currentMeta = isStreaming && streamingMeta ? streamingMeta : aiBriefing?.latest;
-                    if (!currentMeta) return null;
-                    return (
-                      <div
-                        style={{
-                          display: "flex",
-                          flexWrap: "wrap",
-                          gap: "12px",
-                          marginBottom: "14px",
-                          padding: "10px 14px",
-                          background: "rgba(15, 23, 42, 0.5)",
-                          borderRadius: "8px",
-                          border: "1px solid rgba(255, 255, 255, 0.05)",
-                          alignItems: "center",
-                        }}
-                      >
-                        <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
-                          🪙 <strong style={{ color: "#f8fafc" }}>BTC 현재가:</strong>{" "}
-                          {currentMeta.btc_price ? Number(currentMeta.btc_price).toLocaleString("ko-KR") + "원" : "-"}
-                        </div>
-                        <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
-                          📈 <strong style={{ color: "#f8fafc" }}>일봉 20MA:</strong>{" "}
-                          {currentMeta.btc_daily_20ma ? Math.floor(Number(currentMeta.btc_daily_20ma)).toLocaleString("ko-KR") + "원" : "-"}
-                        </div>
-                        <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
-                          ⏱️ <strong style={{ color: "#f8fafc" }}>4시간 60MA:</strong>{" "}
-                          {currentMeta.btc_4h_60ma ? Math.floor(Number(currentMeta.btc_4h_60ma)).toLocaleString("ko-KR") + "원" : "-"}
-                        </div>
-                        <div style={{ fontSize: "12.5px" }}>
-                          {currentMeta.regime_status === "HOLD_CASH" ? (
-                            <span style={{ color: "#f87171", fontWeight: 700 }}>🔴 시장체제: 신규매수차단 (현금보유)</span>
-                          ) : (
-                            <span style={{ color: "#4ade80", fontWeight: 700 }}>🟢 시장체제: 정상거래 허용 (상승추세)</span>
-                          )}
-                        </div>
-                        {isStreaming && (
-                          <div style={{ fontSize: "12px", color: "#38bdf8", marginLeft: "auto", display: "flex", alignItems: "center", gap: "6px" }}>
-                            <span className="spinner" style={{ width: "12px", height: "12px" }} />
-                            한 자씩 실시간 타이핑 중...
-                          </div>
+                  {/* API 키 설정 패널 (접힘/펼침) */}
+                  {showAiKeyConfig && (
+                    <div
+                      style={{
+                        background: "rgba(15, 23, 42, 0.6)",
+                        border: "1px solid rgba(148, 163, 184, 0.15)",
+                        borderRadius: "8px",
+                        padding: "14px 16px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div style={{ fontSize: "13px", fontWeight: 600, color: "#f8fafc", marginBottom: "6px" }}>
+                        Google Gemini API 키 설정 (Method A)
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "10px", lineHeight: "1.5" }}>
+                        Google AI Studio에서 발급받으신 Gemini API 키를 입력하세요. 저장을 누르시면 프로젝트 내{" "}
+                        <code style={{ color: "#38bdf8" }}>config/upbit_config.json</code>의{" "}
+                        <code style={{ color: "#38bdf8" }}>gemini_api_key</code> 항목에 안전하게 저장됩니다.
+                        {aiBriefing?.has_key && (
+                          <span style={{ color: "#4ade80", marginLeft: "6px", fontWeight: 600 }}>
+                            (현재 등록된 키: {aiBriefing.masked_key})
+                          </span>
                         )}
                       </div>
-                    );
-                  })()}
+                      <div style={{ display: "flex", gap: "8px", maxWidth: "600px" }}>
+                        <input
+                          type="password"
+                          placeholder="AIzaSy로 시작하는 Gemini API Key 입력..."
+                          value={aiKeyInput}
+                          onChange={(e) => setAiKeyInput(e.target.value)}
+                          style={{
+                            flex: 1,
+                            padding: "7px 12px",
+                            fontSize: "13px",
+                            background: "#0f172a",
+                            border: "1px solid rgba(148, 163, 184, 0.3)",
+                            borderRadius: "6px",
+                            color: "#fff",
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          style={{ padding: "7px 16px", fontSize: "13px" }}
+                          onClick={handleSaveAiKey}
+                        >
+                          저장
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ padding: "7px 12px", fontSize: "13px" }}
+                          onClick={() => setShowAiKeyConfig(false)}
+                        >
+                          닫기
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-                  {/* 마크다운 텍스트 뷰어 */}
-                  <div
-                    style={{
-                      background: "rgba(15, 23, 42, 0.4)",
-                      borderRadius: "8px",
-                      padding: "16px 20px",
-                      border: "1px solid rgba(255, 255, 255, 0.04)",
-                    }}
-                  >
-                    <MarkdownViewer
-                      content={isStreaming ? streamingText : aiBriefing?.latest?.briefing_text}
-                      isStreaming={isStreaming}
-                    />
-                  </div>
+                  {/* 에러 메시지 알림 */}
+                  {aiError && (
+                    <div
+                      style={{
+                        fontSize: "12.5px",
+                        color: "#f87171",
+                        background: "rgba(239, 68, 68, 0.12)",
+                        border: "1px solid rgba(239, 68, 68, 0.3)",
+                        borderRadius: "8px",
+                        padding: "10px 14px",
+                        marginBottom: "14px",
+                        lineHeight: "1.5",
+                      }}
+                    >
+                      ⚠️ {aiError}
+                    </div>
+                  )}
+
+                  {/* 아직 API 키가 없고 분석 기록도 없을 때의 안내 */}
+                  {!aiBriefing?.has_key && !aiBriefing?.latest && !aiLoading && !isStreaming && (
+                    <div
+                      style={{
+                        padding: "20px",
+                        textAlign: "center",
+                        background: "rgba(15, 23, 42, 0.4)",
+                        borderRadius: "8px",
+                        border: "1px dashed rgba(99, 102, 241, 0.3)",
+                      }}
+                    >
+                      <div style={{ fontSize: "24px", marginBottom: "8px" }}>💡</div>
+                      <div style={{ fontSize: "14px", fontWeight: 600, color: "#f8fafc", marginBottom: "4px" }}>
+                        Gemini API 키를 등록하고 AI 마켓 브리핑을 시작하세요
+                      </div>
+                      <div style={{ fontSize: "12.5px", color: "#94a3b8", maxWidth: "600px", margin: "0 auto 14px", lineHeight: "1.5" }}>
+                        비트코인 일봉 20MA, 4시간 60MA 수급 현황과 3개 자동매매 봇들의 진입/대기 이유를 Gemini 3.5 Flash가 실시간으로 분석해 드립니다.
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        style={{ padding: "6px 16px", fontSize: "13px" }}
+                        onClick={() => setShowAiKeyConfig(true)}
+                      >
+                        Gemini API 키 등록하기
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 로딩 인디케이터 (스트리밍 시작 전 연결 단계) */}
+                  {aiLoading && (
+                    <div
+                      style={{
+                        padding: "28px 20px",
+                        textAlign: "center",
+                        background: "rgba(15, 23, 42, 0.4)",
+                        borderRadius: "8px",
+                      }}
+                    >
+                      <div style={{ fontSize: "14px", fontWeight: 600, color: "#f8fafc", marginBottom: "6px" }}>
+                        ⚡ 업비트 실시간 호가 & 봇 지표 취합 및 Gemini 연결 중...
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                        비트코인 이평선 이격도, 변동성 지표, 3개 봇 포지션을 취합하여 맞춤형 스트리밍 브리핑을 준비하고 있습니다.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 분석 결과 리포트 표시 (스트리밍 작성 중이거나, 완료된 브리핑이 있을 때) */}
+                  {(isStreaming || (!aiLoading && aiBriefing?.latest)) && (
+                    <div>
+                      {/* 주요 지표 요약 바 */}
+                      {(() => {
+                        const currentMeta = isStreaming && streamingMeta ? streamingMeta : aiBriefing?.latest;
+                        if (!currentMeta) return null;
+                        return (
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              gap: "12px",
+                              marginBottom: "14px",
+                              padding: "10px 14px",
+                              background: "rgba(15, 23, 42, 0.5)",
+                              borderRadius: "8px",
+                              border: "1px solid rgba(255, 255, 255, 0.05)",
+                              alignItems: "center",
+                            }}
+                          >
+                            <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                              🪙 <strong style={{ color: "#f8fafc" }}>BTC 현재가:</strong>{" "}
+                              {currentMeta.btc_price ? Number(currentMeta.btc_price).toLocaleString("ko-KR") + "원" : "-"}
+                            </div>
+                            <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                              📈 <strong style={{ color: "#f8fafc" }}>일봉 20MA:</strong>{" "}
+                              {currentMeta.btc_daily_20ma ? Math.floor(Number(currentMeta.btc_daily_20ma)).toLocaleString("ko-KR") + "원" : "-"}
+                            </div>
+                            <div style={{ fontSize: "12.5px", color: "#94a3b8" }}>
+                              ⏱️ <strong style={{ color: "#f8fafc" }}>4시간 60MA:</strong>{" "}
+                              {currentMeta.btc_4h_60ma ? Math.floor(Number(currentMeta.btc_4h_60ma)).toLocaleString("ko-KR") + "원" : "-"}
+                            </div>
+                            <div style={{ fontSize: "12.5px" }}>
+                              {currentMeta.regime_status === "HOLD_CASH" ? (
+                                <span style={{ color: "#f87171", fontWeight: 700 }}>🔴 시장체제: 신규매수차단 (현금보유)</span>
+                              ) : (
+                                <span style={{ color: "#4ade80", fontWeight: 700 }}>🟢 시장체제: 정상거래 허용 (상승추세)</span>
+                              )}
+                            </div>
+                            {isStreaming && (
+                              <div style={{ fontSize: "12px", color: "#38bdf8", marginLeft: "auto", display: "flex", alignItems: "center", gap: "6px" }}>
+                                <span className="spinner" style={{ width: "12px", height: "12px" }} />
+                                한 자씩 실시간 타이핑 중...
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      {/* 마크다운 텍스트 뷰어 */}
+                      <div
+                        style={{
+                          background: "rgba(15, 23, 42, 0.4)",
+                          borderRadius: "8px",
+                          padding: "16px 20px",
+                          border: "1px solid rgba(255, 255, 255, 0.04)",
+                        }}
+                      >
+                        <MarkdownViewer
+                          content={isStreaming ? streamingText : aiBriefing?.latest?.briefing_text}
+                          isStreaming={isStreaming}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
