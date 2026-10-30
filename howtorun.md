@@ -42,11 +42,16 @@ autoCoindTrade/
 
 ## 2. 최초 1회 사전 설치 방법
 
-### 방법 1: `setup.bat` 원클릭 환경 구축 (권장)
-프로젝트 루트에서 `setup.bat`을 실행합니다. Node.js 버전 확인, 디렉토리 생성, 설정 템플릿 복사, 프론트엔드 패키지 설치가 자동으로 진행됩니다.
-```cmd
-.\setup.bat
-```
+### 방법 1: 원클릭 환경 구축 (권장)
+- **Linux / macOS**:
+  ```bash
+  chmod +x setup.sh && ./setup.sh
+  ```
+- **Windows**:
+  ```cmd
+  .\setup.bat
+  ```
+Node.js 버전 확인, 디렉토리 생성, 설정 템플릿 복사, 프론트엔드 패키지 설치가 자동으로 진행됩니다.
 
 ### 방법 2: 수동 설치
 1. **Node.js 22 LTS (v22.5.0 이상)** 확인:
@@ -92,12 +97,18 @@ autoCoindTrade/
 
 ## 4. 프로그램 실행 방법 (How to Run)
 
-### 방법 A: 무음 백그라운드 서비스 실행 (`start_services.bat` 권장)
-탐색기에서 `start_services.bat` (또는 `start.bat`)을 더블클릭하거나 터미널에서 실행합니다.
-```powershell
-.\start_services.bat
-```
-- 백엔드 서버(`http://127.0.0.1:8001`)와 프론트엔드 개발 서버(`http://localhost:9000`)가 윈도우 백그라운드에서 실행됩니다.
+### 방법 A: 무음 백그라운드 서비스 실행 (권장)
+- **Linux / macOS**:
+  ```bash
+  ./start_services.sh
+  # 또는 ./start.sh
+  ```
+- **Windows**:
+  `start_services.bat` (또는 `start.bat`)을 더블클릭하거나 터미널에서 실행합니다.
+  ```powershell
+  .\start_services.bat
+  ```
+- 백엔드 서버(`http://127.0.0.1:8001`)와 프론트엔드 개발 서버(`http://localhost:9000`)가 백그라운드에서 실행됩니다.
 - 웹 브라우저에서 **`http://localhost:9000`** 접속 (입장 코드: `sws@2129`).
 
 ### 방법 B: 터미널에서 수동으로 각각 실행 (디버깅 / 실시간 로그 확인용)
@@ -115,11 +126,17 @@ autoCoindTrade/
 
 ## 5. 프로그램 종료 방법 (How to Stop)
 
-### 방법 A: 원클릭 종료 스크립트 실행 (`stop_services.bat` 권장)
-```powershell
-.\stop_services.bat
-# 또는 .\stop.bat
-```
+### 방법 A: 원클릭 종료 스크립트 실행 (권장)
+- **Linux / macOS**:
+  ```bash
+  ./stop_services.sh
+  # 또는 ./stop.sh
+  ```
+- **Windows**:
+  ```powershell
+  .\stop_services.bat
+  # 또는 .\stop.bat
+  ```
 - 포트 `8001`과 `9000`을 점유 중인 프로세스를 안전하게 종료합니다.
 
 ## 6. 웹 화면 사용 가이드

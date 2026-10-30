@@ -9,23 +9,40 @@
 다른 PC에서 프로젝트를 처음 내려받았거나, AI Agent가 새로운 환경에서 실행을 세팅할 때는 **[SETUP_GUIDE.md](SETUP_GUIDE.md)** 를 참조하세요.
 
 ### 1단계: 초기 환경 설정 (원클릭)
-```cmd
-.\setup.bat
-```
-*(Node.js >= 22.5.0 검증, logs/data 생성, config 파일 생성, frontend npm install을 자동으로 수행합니다.)*
+- **Linux / macOS**:
+  ```bash
+  ./setup.sh
+  ```
+- **Windows**:
+  ```cmd
+  .\setup.bat
+  ```
+*(Node.js >= 22.5.0 검증, logs/data 생성, config 파일 생성, frontend npm install 및 Python 가상환경을 자동으로 수행합니다.)*
 
 ### 2단계: 서비스 시작
-```cmd
-.\start_services.bat
-```
+- **Linux / macOS**:
+  ```bash
+  ./start_services.sh
+  # 또는 ./start.sh
+  ```
+- **Windows**:
+  ```cmd
+  .\start_services.bat
+  ```
 - **웹 대시보드 접속**: [http://localhost:9000](http://localhost:9000)
 - **기본 입장 코드**: `sws@2129`
 - **백엔드 API**: `http://localhost:8001`
 
 ### 3단계: 서비스 중지
-```cmd
-.\stop_services.bat
-```
+- **Linux / macOS**:
+  ```bash
+  ./stop_services.sh
+  # 또는 ./stop.sh
+  ```
+- **Windows**:
+  ```cmd
+  .\stop_services.bat
+  ```
 
 ---
 
@@ -73,12 +90,18 @@ autoCoindTrade/
 │   └── auto_coin_trade.db       # SQLite WAL 모드 데이터베이스
 ├── logs/                        # 실행 로그 (backend.log, frontend.log)
 ├── scripts/
-│   ├── run_backend.bat          # 백엔드 백그라운드 구동 스크립트
-│   ├── run_frontend.bat         # 프론트엔드 백그라운드 구동 스크립트
-│   └── start_silent.vbs         # 콘솔 창 없는 무음 백그라운드 런처
-├── setup.bat                    # [초기 설정] 원클릭 환경 검증 및 npm 패키지 설치
-├── start_services.bat           # [서비스 시작] 백엔드 & 프론트엔드 동시 백그라운드 실행
-├── stop_services.bat            # [서비스 중지] 포트 8001 & 9000 안전 프로세스 종료
+│   ├── run_backend.sh           # [Linux] 백엔드 단독 구동 스크립트
+│   ├── run_frontend.sh          # [Linux] 프론트엔드 단독 구동 스크립트
+│   ├── run_backend.bat          # [Windows] 백엔드 백그라운드 구동 스크립트
+│   ├── run_frontend.bat         # [Windows] 프론트엔드 백그라운드 구동 스크립트
+│   └── start_silent.vbs         # [Windows] 콘솔 창 없는 무음 백그라운드 런처
+├── setup.sh                     # [초기 설정 - Linux] 원클릭 환경 검증 및 패키지 설치
+├── start_services.sh            # [서비스 시작 - Linux] 백엔드 & 프론트엔드 동시 백그라운드 실행
+├── stop_services.sh             # [서비스 중지 - Linux] 포트 8001 & 9000 안전 프로세스 종료
+├── run_orchestrator.sh          # [Python 오케스트레이터 - Linux]
+├── setup.bat                    # [초기 설정 - Windows] 원클릭 환경 검증 및 npm 패키지 설치
+├── start_services.bat           # [서비스 시작 - Windows] 백엔드 & 프론트엔드 동시 백그라운드 실행
+├── stop_services.bat            # [서비스 중지 - Windows] 포트 8001 & 9000 안전 프로세스 종료
 ├── install_startup.bat          # 윈도우 부팅 시 자동 시작 등록
 ├── uninstall_startup.bat        # 윈도우 부팅 시 자동 시작 해제
 ├── README.md                    # 프로젝트 종합 안내서

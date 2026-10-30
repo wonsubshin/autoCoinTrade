@@ -18,18 +18,24 @@
 
 ## 2. 초고속 원클릭 초기 설정 (Quick Start)
 
-### 방법 A: `setup.bat` 원클릭 실행 (Windows 권장)
-프로젝트 루트 디렉터리에서 `setup.bat`을 실행합니다.
+### 방법 A: 원클릭 초기 설정 스크립트
 
+#### Linux / macOS:
+```bash
+chmod +x setup.sh && ./setup.sh
+```
+
+#### Windows:
 ```cmd
 .\setup.bat
 ```
 
-> **`setup.bat`이 자동으로 수행하는 작업**:
+> **설정 스크립트가 자동으로 수행하는 작업**:
 > 1. `Node.js` 설치 여부 및 버전 `>= 22.5.0` 자동 검증
 > 2. `logs/` 및 `data/` 디렉터리 자동 생성
 > 3. `config/upbit_config.json` 부재 시 `config/upbit_config.example.json`에서 자동 복사 생성 (기본: 모의투자 `paper` 모드)
 > 4. `frontend/` 디렉터리로 이동하여 `npm install` 실행
+> 5. Python 가상환경(`.venv`) 준비 및 패키지 설치 (오케스트레이터 및 봇 모듈용)
 
 ---
 
@@ -90,13 +96,19 @@ cd ..
 
 ## 4. 서비스 실행 방법 (How to Run)
 
-### 모드 1: Windows 백그라운드 원클릭 실행 (일반 운영용)
-루트 경로에서 `start_services.bat` (또는 `start.bat`)을 실행합니다.
+### 모드 1: 백그라운드 원클릭 실행 (일반 운영용)
 
+#### Linux / macOS:
+```bash
+./start_services.sh
+# 또는 ./start.sh
+```
+
+#### Windows:
 ```cmd
 .\start_services.bat
 ```
-- 백엔드(포트 `8001`)와 프론트엔드(포트 `9000`)가 윈도우 백그라운드 데몬으로 자동 시작됩니다.
+- 백엔드(포트 `8001`)와 프론트엔드(포트 `9000`)가 백그라운드 데몬으로 자동 시작됩니다.
 - 브라우저에서 **`http://localhost:9000`** 접속
 - 기본 입장 코드: **`sws@2129`**
 
@@ -132,7 +144,13 @@ npm run dev
 
 ## 5. 서비스 중지 방법 (How to Stop)
 
-### Windows 원클릭 중지 스크립트
+#### Linux / macOS:
+```bash
+./stop_services.sh
+# 또는 ./stop.sh
+```
+
+#### Windows:
 ```cmd
 .\stop_services.bat
 ```
@@ -205,6 +223,13 @@ curl -s -I http://localhost:9000
 - **`run_orchestrator.bat`**: Windows 원클릭 실행 스크립트
 
 ### 실행 방법
+
+#### Linux / macOS:
+```bash
+./run_orchestrator.sh
+```
+
+#### Windows:
 ```powershell
 # 1. 패키지 설치
 pip install -r requirements.txt
