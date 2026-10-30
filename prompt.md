@@ -1,130 +1,215 @@
-# 업비트(Upbit) Open API 기반 다중 전략 코인 자동매매 시스템 구축 프롬프트
+# 업비트(Upbit) Open API 기반 다중 전략 코인 자동매매 & AI 퀀트 시스템 구축 프롬프트
 
-당신은 시니어 풀스택 개발자이자 퀀트 트레이딩 시스템 아키텍트입니다. 아래의 요구사항을 **하나도 빠짐없이** 반영하여 업비트 Open API를 활용한 로컬 웹 기반 코인 자동매매 프로그램(Backend + Frontend + SQLite DB)을 설계하고 구현해주세요.
+당신은 시니어 풀스택 개발자이자 가상자산 퀀트 트레이딩 시스템 아키텍트입니다. 아래의 요구사항을 **하나도 빠짐없이 완벽하게** 반영하여, 업비트 Open API를 연동한 로컬 및 외부 웹 기반 코인 자동매매 & 실시간 AI 뉴스 인텔리전스 시스템(Backend + Frontend + Dual DB + AI Streaming + Network Tunnel)을 설계하고 구현해주세요.
 
 ---
 
-## 1. 기술 스택 및 아키텍처 개요
-- **Backend**: Python (FastAPI 권장, 비동기/백그라운드 스케줄러 및 REST API 제공)
-- **Frontend**: React (로컬 웹 형태, 다크 테마 UI, 차트 라이브러리 포함)
-- **Database**: SQLite
-  - **DB 세션 복구 규칙**: SQLite 세션이 끊기거나 날짜가 바뀐 경우(자정 경과 등) 자동으로 재접속 및 세션을 갱신하는 로직을 반드시 구현하세요.
+## 1. 기술 스택 및 시스템 아키텍처
+
+- **Backend**: Node.js (v20+ / ES Module, `node:http`, `node:sqlite` DatabaseSync 기반 고성능 경량 서버, Port `8001`)
+  - 비동기 백그라운드 봇 전략 스케줄러 (8~10초 주기)
+  - Gemini AI 실시간 스트리밍 (Server-Sent Events: SSE) 엔진
+  - 뉴스 실시간 RSS 수집 및 감성 분석 백그라운드 워커 (30분 주기)
+- **Frontend**: React 18+ & Vite (Port `9000`)
+  - 프리미엄 다크 테마 UI (Pretendard 폰트 기반, `#0b0f19` 다크 배경, 2:8 화면 분할)
+  - 상대 경로(`API_BASE = ""`) 및 Vite 프록시(`vite.config.js`)를 통한 로컬, 사내 LAN, 외부 도메인 무설정 동시 지원
+- **Dual Database Architecture (SQLite + PostgreSQL 16)**:
+  - **기본 실시간 DB**: SQLite (`data/auto_coin_trade.db`, WAL 저널 모드, 자동 재접속 지원)
+  - **동기화 및 백업 DB**: PostgreSQL 16 (`coin_trader` 데이터베이스)
+  - **환경별 동적 분기 (.env)**: `LOCATION=local` (로컬 `127.0.0.1:5432`) 또는 `LOCATION=outer` (외부 접속 주소 및 포트) 설정에 따라 자동 연결
+  - **백그라운드 동기화 매니저 (`pg_sync.mjs`)**: SQLite에 저장되는 모든 테이블(`system_settings`, `bots`, `trades`, `bot_positions`, `crypto_news`)의 변경 내역을 PostgreSQL에 실시간 양방향/UPSERT 동기화
+- **외부 접속 지원 (Cloudflare Tunnel & LAN)**:
+  - 사내 LAN (`http://<내부IP>:9000`) 및 Cloudflare Quick Tunnel (`https://*.trycloudflare.com`)을 통한 안전한 외부 접속 지원
+  - Vite `server.allowedHosts: true`, `host: "0.0.0.0"` 적용
 - **형상 관리 및 보안 (Git & `.gitignore`)**:
-  - **Git 원격 저장소 주소**: `https://github.com/wonsubshin/autoCoinTrade.git`
-  - 업비트 Open API의 `Access Key`, `Secret Key` 등 민감 설정값은 별도의 설정 파일(예: `config/upbit_keys.json` 또는 `.env`)로 분리하세요.
-  - 최초 commit 이후 소스를 push할 때 해당 키 설정 파일이 제외되도록 `.gitignore`와 `git update-index --skip-worktree` 안내 또는 템플릿 파일(`upbit_keys.example.json`) 구조를 구성하세요.
-  - **자동 Commit & Push 규칙**: 작업이 끝나면 항상 Git에 `commit` 및 `push`를 수행하세요. 단, **commit 메시지에는 개인정보 관련 문구를 절대 포함하지 마세요.**
+  - 원격 저장소: `https://github.com/wonsubshin/autoCoinTrade.git`
+  - 업비트 Access Key, Secret Key 및 Gemini API Key 등 민감 정보는 `.env` 및 `config/upbit_config.json`으로 분리하여 Git 추적에서 제외(`upbit_config.example.json` 템플릿 제공)
+  - **Git 커밋 규칙**: 작업 완료 시 변경사항을 항상 커밋하되, 커밋 메시지에 개인정보나 계정 정보가 일절 포함되지 않도록 작성
 
 ---
 
-## 2. 디렉토리 및 모듈 구조 요구사항
-- **봇 패키지 분리 (`agentBot`)**:
-  - 각 봇의 매매기법을 언제든지 독립적으로 수정할 수 있도록 `agentBot` 패키지를 생성하고, 그 하위에 봇별 소스 파일을 분리하여 구현하세요.
-    - `agentBot/bot_volatility.py`: Bot 1 - 필터 결합형 변동성 돌파 (장중 단타 / 1일 보유)
-    - `agentBot/bot_dual_momentum.py`: Bot 2 - 상대 모멘텀 + 절대 모멘텀 (듀얼 모멘텀 스윙)
-    - `agentBot/bot_bollinger_reversal.py`: Bot 3 - 고변동성 코인 볼린저 밴드 역추세 (분봉 단기 반등 매매)
-- **공용 Open API 통신 모듈**:
-  - 모든 봇은 직접 업비트 API를 호출하지 않고, **공용 Open API 통신 모듈**을 통해서만 시세/잔고 조회, 매수, 매도를 요청하도록 구현하세요.
-  - 공용 모듈에는 업비트 통신 상태(정상/지연/통신불가 및 사유)를 실시간 추적하는 헬스체크 기능을 포함하세요.
+## 2. 디렉토리 및 모듈 구조
+
+```text
+autoCoinTrade/
+├── backend/
+│   ├── node_server.mjs          # 백엔드 코어 HTTP 서버, DB 초기화, REST API, SSE 스트리밍
+│   └── common/
+│       ├── news_service.mjs     # 구글 뉴스 & 토큰포스트 RSS 파싱, 감성 분석, 태그 추출
+│       └── pg_sync.mjs          # PostgreSQL 16 실시간 데이터 동기화 매니저
+├── config/
+│   ├── upbit_config.json        # 업비트 및 Gemini API 키 설정 파일 (Git 제외)
+│   └── upbit_config.example.json# 설정 파일 템플릿
+├── data/
+│   └── auto_coin_trade.db       # 로컬 SQLite 데이터베이스 (WAL 모드)
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx              # 프론트엔드 메인 컴포넌트 (4대 메뉴, AI 스트리밍, 페이지네이션)
+│   │   ├── main.jsx             # React 엔트리포인트
+│   │   └── styles.css           # 다크 테마, 2:8 레이아웃, 동일 Row 높이 테이블, 모달 스타일
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.js           # 0.0.0.0 바인딩, allowedHosts, /api 프록시 설정
+├── scripts/
+│   ├── setup_postgresql.sh      # PostgreSQL 16 계정 및 데이터베이스 자동 설치/설정 스크립트
+│   └── migrate_sqlite_to_pg.py  # SQLite -> PostgreSQL 전체 데이터 마이그레이션 스크립트
+├── start_services.sh            # 백엔드(8001) 및 프론트엔드(9000) 백그라운드 원클릭 실행 스크립트
+├── stop_services.sh             # 실행 중인 서비스 정상 종료 스크립트
+└── .env                         # LOCATION=local|outer, PostgreSQL 접속 정보, Gemini API 키
+```
 
 ---
 
-## 3. 봇 매매 전략 및 핵심 안전/격리 규칙 (필수 준수)
+## 3. 데이터베이스 스키마 요구사항
 
-### 3.1 3가지 매매 전략 봇
-1. **Bot 1**: 필터 결합형 변동성 돌파 (장중 단타 / 1일 보유)
-2. **Bot 2**: 상대 모멘텀 + 절대 모멘텀 (듀얼 모멘텀 스윙)
-3. **Bot 3**: 고변동성 코인 볼린저 밴드 역추세 (분봉 단기 반등 매매)
+SQLite와 PostgreSQL 모두 동일한 스키마 구조를 유지하며, 다음 6개 테이블을 구성해야 합니다:
 
-### 3.2 봇 간 상호 간섭 방지 규칙 (격리 아키텍처)
-- **전량 조회 함수(`get_balance`) 직접 매도 절대 금지**:
-  - `upbit.get_balance("BTC")` 후 전량 매도 방식을 사용하면 다른 봇이 매수한 물량까지 함께 매도됩니다.
-  - 매도 시에는 반드시 로컬 DB의 `bot_positions` 테이블에서 **본인 `bot_id`로 기록된 `volume` 수량만 지정**하여 시장가 분할/지정 수량 매도해야 합니다.
-- **동일 종목 동시 진입 시 충돌 방지**:
-  - 서로 다른 봇(예: Bot 1, Bot 2)이 동시에 동일 종목(예: `KRW-BTC`)을 매수하더라도, DB에 각각의 매수 `order_uuid`와 진입 수량(`volume`), 진입 단가를 분리 기록하여 매도 시 자기 지분만 정확히 회수할 수 있게 구현하세요.
-- **주문 전 가상 잔고(`virtual_krw`) 트랜잭션 락**:
-  - 실제 업비트 계좌 잔고와 무관하게, 각 봇은 DB에 할당된 본인의 `virtual_krw`(예산) 값 이상으로 주문을 낼 수 없도록 주문 전 예산 체크 함수 및 DB 트랜잭션 락(Lock)을 통과하도록 제한하세요.
-- **자금 분배 비율 및 소수점 버림 처리**:
-  - 설정 화면에서 지정한 각 봇별 자금 분배 비율에 따라 원금을 분배하여 `virtual_krw`를 설정/운용하며, 계산된 금액에 소수점이 발생하면 **무조건 버림(`math.floor` / `int`)** 처리하세요.
-- **잔고 0 이하 시 전체 봇 자동 중지**:
-  - 설정된 잔고가 `0` 이하로 떨어지면 **모든 봇을 즉시 거래 중지** 상태로 전환하고, 사용자가 이를 인지할 수 있도록 프론트엔드 '거래 현황' 진입 시 Modal Popup으로 알림을 띄우세요.
-
-### 3.3 API 호출 및 트레이딩 필수 규칙
-- **API Rate Limit 방어**: 연속 API 호출 시 `time.sleep(0.12)`를 적용하여 요청 제한을 방어하세요.
-- **유동성(거래대금) 필터 적용**: 최소 거래대금 필터(`min_volume_krw`)를 적용하여 유동성이 부족한 코인을 제외하세요.
-- **기준 시점 인덱싱 규칙**: 캔들/시계열 데이터 조회 및 모멘텀/지표 계산 시 기준 시점 인덱싱(`count=8`, `iloc[-8]`) 규칙을 준수하세요.
-
-### 3.4 안정적인 실전 코인 매매를 위한 추가 필수 안정성 설계
-- **업비트 최소 주문 금액(5,000 KRW) 및 매매 수수료(0.05%) 정합성 처리**:
-  - 업비트 원화 마켓 최소 주문 금액(`5,000원`) 미만일 경우 주문을 시도하지 않도록 사전 검증하세요.
-  - 시장가 매수 시 수수료(`0.05%`)를 고려하여 `실제 주문 금액 = floor(투입 예산 / 1.0005)` 형태로 계산함으로써 수수료 부족(`insufficient_funds_bid`) 에러를 방지하세요.
-  - 매도 후 정산 시에도 매도 수수료를 차감한 실제 입금액 기준으로 `virtual_krw`와 실현 손익(차익)을 업데이트하세요.
-- **수량 정밀도(`Decimal`) 및 부동소수점 오차 방어**:
-  - Python `float` 연산 오차로 인해 보유 수량보다 미세하게 큰 수량을 매도 요청하는 오류를 막기 위해, 코인 수량(`volume`)과 단가 계산에는 `decimal.Decimal` 및 소수점 8자리 내림(`ROUND_DOWN`)을 적용하세요.
-- **주문 체결 확인(Order Reconciliation) 및 미체결/부분체결 방어**:
-  - 주문 요청 직후 반환된 `order_uuid`만으로 체결을 단정하지 말고, 주문 상태 조회 API를 통해 실제 체결 완료(`done`/`cancel`) 여부, 누적 체결 수량(`executed_volume`), 평균 체결 단가, 지불 수수료(`paid_fee`)를 확인한 뒤 `bot_positions` 및 `trades` 테이블에 확정 반영하세요.
-- **SQLite 다중 스레드/비동기 동시성 제어 (`WAL` 모드)**:
-  - 3개의 봇과 웹 API가 동시에 DB에 접근할 때 `database is locked` 오류가 발생하지 않도록 SQLite 연결 시 `PRAGMA journal_mode=WAL;`, `PRAGMA synchronous=NORMAL;`, `PRAGMA busy_timeout=5000;`을 기본 적용하세요.
-- **봇별 장애 격리(Fault Isolation) 및 자동 복구**:
-  - 특정 봇 실행 중 네트워크 일시 단절이나 API 예외가 발생해도 다른 봇이나 전체 백엔드 서버가 중단되지 않도록 각 봇 워커 루프에 독립적인 예외 처리(`try-except`), 지수 백오프(Exponential Backoff) 재시도, 구조화된 에러 로깅을 적용하세요.
-- **서버 재시작 시 포지션/상태 복구 및 Graceful Shutdown**:
-  - 프로그램이 재시작되더라도 DB의 `bot_positions`를 읽어 기존 보유 물량과 봇별 실행 상태를 그대로 이어받아 감시하며(중복 매수 방지), 프로세스 종료 시 진행 중인 주문/DB 트랜잭션을 안전하게 마무리(Graceful Shutdown)하도록 구현하세요.
-- **리스크 관리 안전장치 (Stop-Loss / 급락 방어)**:
-  - 전략 신호 외에도 각 봇 설정에서 고정 손절매 비율(Stop-Loss %) 및 최대 보유 종목 수를 지정할 수 있게 하여 급격한 시장 하락 시 손실을 제한하세요.
+1. **`system_settings`**: `key`(PK, TEXT), `value`(TEXT), `updated_at`(TEXT)
+2. **`bots`**: `bot_id`(PK, TEXT), `name`(TEXT), `nickname`(TEXT), `strategy_type`(TEXT), `description`(TEXT), `allocation_ratio`(REAL), `allocated_capital`(INTEGER), `virtual_krw`(INTEGER), `is_running`(INTEGER), `min_volume_krw`(INTEGER), `stop_loss_pct`(REAL), `take_profit_pct`(REAL), `config_json`(TEXT), `last_status_msg`(TEXT), `updated_at`(TEXT)
+3. **`trades`**: `id`(PK, AUTOINCREMENT), `bot_id`(TEXT), `market`(TEXT), `buy_order_uuid`(TEXT), `sell_order_uuid`(TEXT), `buy_price`(REAL), `buy_volume`(TEXT), `buy_amount`(INTEGER), `buy_date`(TEXT), `sell_price`(REAL), `sell_volume`(TEXT), `sell_amount`(INTEGER), `sell_date`(TEXT), `profit_krw`(INTEGER), `profit_pct`(REAL), `status`(TEXT DEFAULT 'HOLDING')
+4. **`bot_positions`**: `id`(PK, AUTOINCREMENT), `bot_id`(TEXT), `market`(TEXT), `order_uuid`(TEXT UNIQUE), `volume`(TEXT), `avg_buy_price`(REAL), `buy_amount`(INTEGER), `buy_fee`(REAL), `trade_id`(INTEGER), `status`(TEXT DEFAULT 'OPEN'), `created_at`(TEXT), `closed_at`(TEXT)
+5. **`ai_market_briefings`**: `id`(PK, AUTOINCREMENT), `provider`(TEXT), `model`(TEXT), `btc_price`(REAL), `btc_daily_20ma`(REAL), `btc_4h_60ma`(REAL), `regime_status`(TEXT), `briefing_text`(TEXT), `created_at`(TEXT)
+6. **`crypto_news`**: `id`(PK, AUTOINCREMENT), `title`(TEXT), `link`(TEXT UNIQUE), `source`(TEXT), `published_at`(TEXT), `summary`(TEXT), `sentiment`(TEXT DEFAULT 'NEUTRAL'), `keywords`(TEXT), `created_at`(TEXT)
+   - 인덱스: `idx_crypto_news_pubdate` ON `crypto_news (published_at DESC)`
+7. **`ai_news_briefings`**: `id`(PK, AUTOINCREMENT), `provider`(TEXT), `model`(TEXT), `news_count`(INTEGER), `bullish_count`(INTEGER), `bearish_count`(INTEGER), `neutral_count`(INTEGER), `briefing_text`(TEXT), `created_at`(TEXT)
 
 ---
 
-## 4. 프론트엔드 (React) UI/UX 상세 요구사항
+## 4. 봇 매매 전략 및 퀀트 안전 격리 아키텍처
 
-### 4.1 테마 및 레이아웃
-- **전반적인 분위기**: 고급스럽고 가독성 높은 **Dark 테마**로 구현하세요.
+### 4.1 3가지 독립 매매 전략 봇
+1. **변동성 돌파 봇 (`bot_volatility`)**: 전일 변동폭(High - Low) * K(0.5) 돌파 시 매수, 당일 종가 또는 익일 시가 매도 (장중 단타/1일 보유)
+2. **듀얼 모멘텀 봇 (`bot_dual_momentum`)**: 상대 모멘텀(수익률 상위 종목) + 절대 모멘텀(현금 보유 필터) 결합 스윙 전략
+3. **볼린저 밴드 역추세 봇 (`bot_bollinger_reversal`)**: 볼린저 밴드 하단 이탈 후 반등 시 분할 매수, 중심선/상단선 도달 시 익절 (+3.5% 익절 / -2.0% 손절)
+
+### 4.2 상호 간섭 방지 및 자금 격리 규칙 (절대 준수)
+- **전량 조회 함수(`get_balance`) 직접 매도 금지**:
+  - 매도 시 반드시 본인 `bot_id`의 `bot_positions`에 기록된 `volume` 수량만 지정하여 매도.
+- **동일 종목 동시 진입 격리**:
+  - 복수 봇이 동일 코인(예: KRW-BTC)을 매수하더라도 개별 `order_uuid`로 지분을 분리하여 관리.
+- **가상 잔고(`virtual_krw`) 트랜잭션 락**:
+  - 각 봇은 DB에 할당된 `virtual_krw` 예산 범위 내에서만 주문을 발행.
+- **자금 분배 시 소수점 버림 처리**:
+  - 총 원금에 배분 비율(%)을 곱할 때 발생하는 소수점은 무조건 내림(`Math.floor`)하여 정수 원화로 계산.
+- **잔고 0 이하 시 전체 봇 자동 중지 및 모달 알림**:
+  - 잔고가 0 이하가 되면 모든 봇을 즉시 비활성화(`is_running = 0`)하고, 사용자가 거래현황 화면 진입 시 안내 Modal Popup 표기.
+- **비트코인 시장 체제 필터 (Regime Filter)**:
+  - 비트코인 현재가가 일봉 20일 이동평균선(20 MA) 및 4시간봉 60선(60 MA) 아래에 있을 경우 신규 매수를 전면 차단하고 현금 보유(`HOLD_CASH`) 모드로 전환.
+- **업비트 API 안정성 규칙**:
+  - 초당 요청 제한 방어를 위한 `120ms` 호출 간격 방어.
+  - 최소 주문 금액(5,000원) 및 매수 수수료(0.05%) 사전 반영(`floor(예산 / 1.0005)`).
+  - 수량 계산 시 8자리 절삭을 통한 부동소수점 오차 방지.
+  - 주문 체결 확인(Order Reconciliation)을 통한 실제 체결가 및 수수료 동기화.
+
+---
+
+## 5. 프론트엔드 (React) UI/UX 상세 요구사항
+
+### 5.1 공통 레이아웃 및 보안 게이트
+- **다크 테마 & 2:8 레이아웃**:
+  - 좌측 20% 메뉴 영역 + 우측 80% 상세 콘텐츠 영역.
 - **입장 코드(Gate) 화면**:
-  - 개인용이므로 별도 ID/ 회원가입은 없으며, 최초 진입 시 입장 코드 입력 화면을 표시합니다.
-  - 입장 코드 `sws@2129`를 정확히 입력하면 내부 메인 화면으로 진입합니다.
-- **메인 화면 레이아웃 (2:8 비율)**:
-  - **좌측 메뉴 영역 (20%)** + **우측 상세 화면 영역 (80%)** 비율로 구성하세요.
-  - **좌측 메뉴 상단 - 업비트 통신 상태 표시기**:
-    - 정상 통신: **초록색(Green)** / 지연: **노란색(Yellow)** / 통신 불가: **빨간색(Red)** 인디케이터 표시
-    - 마우스를 해당 영역에 올리면(Tooltip) 현재 상태의 상세 이유(예: 응답 속도 ms, API 키 오류, 네트워크 타임아웃 등)를 표시하세요.
-  - **좌측 네비게이션 메뉴 구성**: `거래현황`, `통계`, `설정` 3가지 메뉴로 구성하세요.
-
-### 4.2 [메뉴 1] 거래현황 화면
-- **봇별 탭(Tab) 구분**: 각 봇(별명 표시)별로 탭을 구분하여 현황을 조회합니다.
-- **수동 거래 시작 / 중단 제어 및 Modal Popup**:
-  - 각 봇 탭에 사용자가 수동으로 조작할 수 있는 `거래 시작`, `거래 중단` 버튼을 배치하세요.
-  - 버튼을 눌러 거래가 시작되거나 중지될 때 정상적으로 동작했는지 사용자가 즉시 알 수 있도록 **Modal Popup**을 표시하세요.
-  - 설정된 잔고가 `0` 이하로 떨어져 전체 봇이 자동 중지된 상태라면, 거래현황 화면 진입 시 즉시 **Modal Popup**으로 중지 사유를 알려주세요.
-- **거래 정보 게시판**:
-  - 한 줄(Row)에 `매수금액/단가`, `매도금액/단가`, `매수일시`, `매도일시`, `차익(손익금/수익률)`이 표시되도록 구성하세요.
-  - 아직 매도하지 않은 포지션은 매도 관련 칸(`매도`, `매도일`, `차익`)을 빈칸으로 두고, 매도가 완료되면 해당 Row를 업데이트하는 방식으로 구현하세요. (단일 Row 업데이트 구성이 어려운 경우 매수/매도를 각각의 Row로 표기하는 것도 허용하지만, 가급적 매수-매도 매칭 Row 업데이트 방식을 우선 구현하세요.)
-
-### 4.3 [메뉴 2] 통계 화면
-- **기간별 탭(Tab) 및 꺾은선 그래프**:
-  - `일간` / `주간` / `월간` 탭으로 구성하세요.
-  - 통계 시작 기준일은 **`2026.10.01`**부터로 설정하세요.
-  - 차익(손익) 이력을 직관적인 **선 그래프(Line Chart)** 형태로 표시하세요.
-- **하단 다빈도 거래 코인 게시판**:
-  - 그래프 하단에 가장 많이 거래된 코인 순으로 정렬된 게시판을 표시하세요.
-  - 각 코인의 **해당 주간 / 월간 / 연간 누적 손익**을 표시하되, 손익 값의 색상을 다음과 같이 구분하세요:
-    - **이익(> 0)**: 빨간색 (`Red`)
-    - **손해(< 0)**: 파란색 (`Blue`)
-    - **그 외(= 0)**: 검은색 (`Black`, 다크모드 배경에서 식별 가능하도록 테두리/배지 또는 명도 처리 병행)
-
-### 4.4 [메뉴 3] 설정 화면
-- **봇 수정 및 별명(Nickname) 설정**:
-  - 각 봇의 설정(파라미터, 대상 마켓/필터 등)을 수정하고, 각 봇별 **별명(Nickname)**을 지정/변경할 수 있는 기능을 구현하세요.
-- **봇별 자금 분배 비율 설정**:
-  - 전체 운용 원금 및 각 봇별 자금 분배 비율(%)을 설정할 수 있게 하고, 저장 시 비율에 따라 각 봇의 `virtual_krw`가 소수점 버림(`floor`)으로 계산되어 반영되도록 하세요.
-- **데이터 마이그레이션(백업) 및 복원**:
-  - 현재 DB의 모든 데이터(봇 설정, 포지션, 거래 내역 등)를 **JSON 파일로 내보내기(마이그레이션/Export)** 하는 기능과, 해당 **JSON 파일을 업로드/읽어서 DB를 복원(Import)** 하는 기능을 구현하세요.
+  - 별도 회원가입 없이 개인용 입장 코드 `sws@2129` 입력 시 메인 화면 진입 (새로고침 시 세션 유지).
+- **업비트 통신 상태 인디케이터**:
+  - 좌측 메뉴 상단에 초록(정상) / 노랑(지연) / 빨강(통신불가) 실시간 표시.
+  - 마우스 오버 시 툴팁으로 응답 속도(ms) 및 최근 확인 시각 표시.
+- **4대 네비게이션 메뉴 구성**:
+  1. `📊 거래현황`
+  2. `📈 통계`
+  3. `📰 뉴스` (실시간 뉴스 피드 & AI 종합 분석)
+  4. `⚙️ 설정`
 
 ---
 
-## 5. 작업 수행 및 유지보수 지침 (필수 준수)
-1. 먼저 전체 프로젝트 디렉토리 구조와 SQLite 테이블 스키마(`bots`, `bot_positions`, `trades`, `system_settings` 등)를 설계하세요.
-2. 백엔드 공용 Upbit Open API 모듈, SQLite 자동 재접속 매니저, 트랜잭션 락/가상잔고 관리자, 그리고 `agentBot` 패키지 내 3종의 매매 봇을 구현하세요.
-3. FastAPI 엔드포인트와 프론트엔드 React 애플리케이션을 구현하여 모든 UI/UX 요구사항(입장코드 `sws@2129`, 2:8 다크 레이아웃, 통신 상태 툴팁, 봇 시작/중지 모달, 잔고 0 이하 자동 중지 모달, 2026.10.01 기준 통계 차트 및 코인별 손익 색상 구분, JSON 백업/복원)을 연결하세요.
-4. 로컬에서 백엔드와 프론트엔드를 실행하는 방법과 테스트 방법을 안내해주세요.
-5. **수정 범위 엄격 제한 (사이드 이펙트 방지)**: 향후 추가/수정 요청 사항이 있을 경우 **반드시 요청받은 해당 부분만 국소적으로 수정**해야 하며, 그 이외의 기존 소스 코드나 동작에 절대 영향을 주어서는 안 됩니다.
-6. **작업 완료 후 Git 반영**: 모든 작업(초기 구현 및 이후 수정 작업 포함)이 끝나면 원격 저장소(`https://github.com/wonsubshin/autoCoinTrade.git`)에 항상 `commit` & `push`를 수행하되, 커밋 메시지에 개인정보나 민감 정보가 포함되지 않도록 작성하세요.
+### 5.2 [메뉴 1] 거래현황 화면
+- **봇별 탭(Tab)**: 봇별 별명과 전략이 표시되는 개별 탭.
+- **봇 제어 버튼**: `거래 시작`, `거래 중지`, `매수 테스트`, `매도 테스트` 버튼 제공 및 동작 결과 Modal Popup 안내.
+- **거래 정보 게시판**:
+  - 1행 매칭 방식: 매수단가/수량/금액, 매도단가/수량/금액, 매수일시, 매도일시, 실현손익 표기.
+  - 미체결 보유 포지션은 매도 영역 공란 유지.
+- **상단 AI 실시간 마켓 브리핑**:
+  - Gemini AI 기반 시황 분석 및 한 글자씩 스트리밍 타이핑(Typewriter) 출력.
 
+---
+
+### 5.3 [메뉴 2] 통계 화면
+- **기간별 탭**: `일별 통계` / `주별 통계` / `월별 통계` (새로고침 시 선택 탭 유지).
+- **통계 시작 기준일**: `2026.10.01`부터 누적 집계.
+- **손익 색상 구분 규칙 (필수)**:
+  - **이익(> 0)**: 빨간색 (`#ef4444`)
+  - **손해(< 0)**: 파란색 (`#3b82f6`)
+  - **0원(= 0)**: 검은색/회색 뱃지
+- **코인별 수익 기여도 순위 테이블**: 누적 실현 손익 및 승률 순위 표기.
+
+---
+
+### 5.4 [메뉴 3] 뉴스 화면 (핵심 신규 구현 사항)
+
+#### ① 뉴스 수집 및 감성 분석 엔진 (`news_service.mjs`)
+- Google News(국내/글로벌) 및 TokenPost RSS를 실시간 파싱하여 주요 가상자산 뉴스 수집 (중복 링크 방어).
+- 제목 및 본문 기반 감성 분석: `▲ 호재(BULLISH)`, `▼ 악재(BEARISH)`, `● 중립(NEUTRAL)`.
+- 키워드 자동 태깅: `#비트코인`, `#이더리움`, `#업비트`, `#바이낸스`, `#리플`, `#솔라나`, `#ETF`, `#규제/정책`, `#시황/전망`, `#해킹/보안`.
+- 서버 기동 시 최초 수집 및 **30분 주기 백그라운드 자동 갱신**.
+- 상단 **[🔄 최신 뉴스 즉시 수집]** 버튼 제공.
+
+#### ② 검색 및 필터링 기능
+- **날짜 범위 검색**: 시작일(`startDate`) 및 종료일(`endDate`) 캘린더 입력.
+- **통합 키워드 검색**: 기사 제목, 요약, 언론사, 해시태그 대상 실시간 검색.
+- **인기 태그 뱃지**: 원클릭으로 검색어에 태그 자동 입력 및 즉시 조회.
+- **초기화 버튼**: 검색 조건 초기화.
+
+#### ③ 50건 단위 목록 뷰 및 행(Row) 높이 동일화 (필수 준수)
+- **한 화면 50건 노출**: `limit=50`, 전체 페이지네이션(`« 처음`, `‹ 이전`, 페이지 번호 7개, `다음 ›`, `마지막 »`).
+- **Row 높이 동일화 (`.news-board-table`)**:
+  - 테이블에 `table-layout: fixed; width: 100%;` 적용.
+  - 모든 행(`tr`) 및 셀(`td`)에 고정 높이(`height: 48px; max-height: 48px; line-height: 48px; vertical-align: middle;`) 적용.
+  - 제목이 길어도 줄바꿈되지 않고 1줄 말줄임표(`overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`)로 표시되어 **모든 행의 높이가 완벽히 동일**해야 함.
+  - 마우스 호버 시 기사 전체 제목과 요약문이 툴팁(`title`)으로 노출되어 언제든 원문 확인 가능.
+  - 기사 제목 클릭 시 새 탭(`target="_blank"`)에서 원문 기사 오픈.
+
+#### ④ 뉴스 기반 AI 종합 판단 및 시황 분석 (Gemini SSE 스트리밍)
+- **접을 수 있는 아코디언 영역 (Collapsible Box)**:
+  - 상단 **[▲ 접기] / [▼ 펼치기]** 토글 버튼 및 카드 헤더 클릭으로 영역을 자유롭게 열고 닫을 수 있음.
+  - 접힌 상태에서도 최근 분석 시각, 사용 모델, 호재/악재 통계 배지 노출.
+- **'AI 분석하기' 버튼 클릭 시 실시간 스트리밍 한 글자씩 타이핑**:
+  - **[🤖 AI 분석하기]** 버튼 클릭 시 백엔드 `/api/ai/stream-news-analyze` 엔드포인트(SSE) 호출.
+  - 수집된 250+ 뉴스와 호재/악재 비율, 주요 코인 시세를 Gemini AI(`gemini-3.5-flash-lite`)가 분석.
+  - 수신된 청크 토큰을 큐(Queue)에 담아 **18ms 간격으로 한 글자씩 부드럽게 화면에 타이핑(Typewriter Effect)** 출력.
+  - 타이핑 진행 중 깜빡이는 보라색 커서(`|`) 애니메이션 표시.
+  - 분석 완료 후 `ai_news_briefings` 테이블에 영구 저장되어 새로고침 시에도 유지.
+
+---
+
+### 5.5 [메뉴 4] 설정 화면
+- **업비트 실계좌 자산 확인**: 읽기 전용으로 실제 보유 원화, 매수금액, 총 평가금액, 평가손익률 표시.
+- **자금 분배 비율 및 원금 설정**: 전체 운용 원금 및 봇별 배분 비율(%) 설정 시 소수점 버림 처리.
+- **봇 파라미터 및 별명 수정**: 손절율, 익절율, 최소 거래대금, 전략별 계수(K값, 표준편차 배수) 저장.
+- **Gemini API 키 등록/수정**: 웹 UI에서 Gemini API 키 직접 입력 및 저장 (`sk-...` 마스킹 처리).
+- **JSON 데이터 마이그레이션(백업) 및 복원**:
+  - SQLite의 전체 데이터(봇, 거래내역, 포지션, 설정)를 단일 JSON 파일로 Export.
+  - JSON 파일을 업로드하여 기존 DB를 무결성 검증과 함께 완벽 복원 (UNIQUE 충돌 방어 처리 포함).
+
+---
+
+## 6. 외부 네트워크 및 배포/운영 구성
+
+- **실행 및 중지 스크립트**:
+  - `./start_services.sh`: 백엔드(8001) 및 프론트엔드(9000)를 백그라운드 구동하고 헬스체크 수행.
+  - `./stop_services.sh`: 구동 중인 프로세스를 안전하게 종료.
+- **Cloudflare Tunnel 연동**:
+  - `cloudflared tunnel --url http://127.0.0.1:9000`을 통해 HTTPS 외부 주소 생성.
+  - IPv6 충돌 방지를 위해 반드시 `http://127.0.0.1:9000`으로 바인딩.
+- **Vite Same-Origin Proxy**:
+  - 프론트엔드에서 `/api`를 호출하면 `vite.config.js`의 proxy가 내부 백엔드(`http://127.0.0.1:8001`)로 무중단 포워딩하여 브라우저 환경에 구애받지 않고 동작.
+
+---
+
+## 7. 작업 수행 및 형상관리(Git) 지침
+
+1. **국소 수정 원칙 (사이드 이펙트 방지)**:
+   - 추가 요청 사항 작업 시 반드시 요청받은 범위만 수정하며, 기존에 정상 작동 중인 매매 봇 로직, 통계 집계, DB 동기화 코드에 절대 영향을 주지 않도록 합니다.
+2. **React TDZ(Temporal Dead Zone) 방어**:
+   - `useCallback` 및 함수 선언이 `useEffect`보다 반드시 앞에 위치하도록 선언 순서를 엄격히 준수합니다.
+3. **작업 완료 후 자동 Git 반영**:
+   - 모든 수정 작업 완료 후 `git add` 및 `git commit`을 반드시 수행합니다.
+   - 커밋 메시지에는 API 키, 계정명, 비밀번호 등 민감 정보를 일절 포함하지 않고 기능 단위(`feat`, `fix`, `refactor`)로 명확히 작성합니다.
