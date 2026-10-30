@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Upbit AutoCoinTrade - SQLite to PostgreSQL 16 Migration Tool
-Migrates all tables and rows from data/auto_coin_trade.db to PostgreSQL database 'coin_trader'.
+Supports LOCATION mode from .env:
+- LOCATION=local : Connects to local PostgreSQL (LOCAL_PG_HOST / 127.0.0.1)
+- LOCATION=outer : Connects to remote PostgreSQL (OUTER_PG_HOST / 218.234.55.78)
 """
 import os
 import sqlite3
@@ -17,13 +19,38 @@ except ImportError:
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SQLITE_DB = PROJECT_ROOT / "data" / "auto_coin_trade.db"
+ENV_PATH = PROJECT_ROOT / ".env"
 
-# PostgreSQL 연결 정보 (환경변수 또는 기본값)
-PG_HOST = os.getenv("PGHOST", "127.0.0.1")
-PG_PORT = int(os.getenv("PGPORT", "5432"))
-PG_DATABASE = os.getenv("PGDATABASE", "coin_trader")
-PG_USER = os.getenv("PGUSER", "coin_trader")
-PG_PASSWORD = os.getenv("PGPASSWORD", "coin123$%^")
+def load_env():
+    if ENV_PATH.exists():
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    if k and (k not in os.environ or os.environ[k] == ""):
+                        os.environ[k] = v
+
+load_env()
+
+LOCATION = os.getenv("LOCATION", "local").strip().lower()
+IS_OUTER = LOCATION == "outer"
+
+if IS_OUTER:
+    PG_HOST = os.getenv("OUTER_PG_HOST", "218.234.55.78")
+    PG_PORT = int(os.getenv("OUTER_PG_PORT", "5432"))
+    PG_DATABASE = os.getenv("OUTER_PG_DATABASE", "coin_trader")
+    PG_USER = os.getenv("OUTER_PG_USER", "coin_trader")
+    PG_PASSWORD = os.getenv("OUTER_PG_PASSWORD", "coin123$%^")
+else:
+    PG_HOST = os.getenv("LOCAL_PG_HOST", os.getenv("PGHOST", "127.0.0.1"))
+    PG_PORT = int(os.getenv("LOCAL_PG_PORT", os.getenv("PGPORT", "5432")))
+    PG_DATABASE = os.getenv("LOCAL_PG_DATABASE", os.getenv("PGDATABASE", "coin_trader"))
+    PG_USER = os.getenv("LOCAL_PG_USER", os.getenv("PGUSER", "coin_trader"))
+    PG_PASSWORD = os.getenv("LOCAL_PG_PASSWORD", os.getenv("PGPASSWORD", "coin123$%^"))
 
 
 def create_pg_schema(pg_cursor):
@@ -104,7 +131,7 @@ def create_pg_schema(pg_cursor):
 
 def migrate():
     print("=" * 60)
-    print("[SQLite -> PostgreSQL 16 마이그레이션 시작]")
+    print(f"[SQLite -> PostgreSQL 16 마이그레이션 (LOCATION={LOCATION.upper()})]")
     print("=" * 60)
 
     if not SQLITE_DB.exists():
@@ -126,8 +153,7 @@ def migrate():
         )
         pg_conn.autocommit = False
     except Exception as e:
-        print(f"\n[ERROR] PostgreSQL 연결 실패: {e}")
-        print("힌트: scripts/setup_postgresql.sh 스크립트를 먼저 실행하여 계정과 권한을 설정했는지 확인하세요.")
+        print(f"\n[ERROR] PostgreSQL 연결 실패 ({PG_HOST}:{PG_PORT}): {e}")
         sys.exit(1)
 
     with pg_conn.cursor() as cur:
@@ -279,10 +305,9 @@ def migrate():
     pg_conn.close()
 
     print("=" * 60)
-    print("[SUCCESS] PostgreSQL 16 마이그레이션이 성공적으로 완료되었습니다!")
+    print(f"[SUCCESS] PostgreSQL 16 ({LOCATION.upper()}) 마이그레이션이 완료되었습니다!")
     print("=" * 60)
 
 
 if __name__ == "__main__":
     migrate()
-

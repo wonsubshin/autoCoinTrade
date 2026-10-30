@@ -269,7 +269,30 @@ python3 scripts/migrate_sqlite_to_pg.py
 ```
 - SQLite(`data/auto_coin_trade.db`)의 `system_settings`, `bots`, `trades`, `bot_positions`, `ai_market_briefings` 테이블 및 데이터를 PostgreSQL로 이관
 
-### 3단계: 외부 접속 정보 (DBeaver / DataGrip 등)
+### 3단계: .env 위치(LOCATION) 모드 설정 및 외부 접속 정보
+`.env` 파일의 `LOCATION` 값을 변경하여 로컬 접속과 외부 접속을 원클릭으로 전환할 수 있습니다:
+- **`LOCATION=local`**: 로컬 내부 IP (`127.0.0.1:5432`)로 접속 (기본값)
+- **`LOCATION=outer`**: 외부 접속 공인 IP (`218.234.55.78:5432`)로 접속
+
+```ini
+# .env 설정 예시
+LOCATION=local  # 또는 outer
+
+# [Local] 로컬 접속
+LOCAL_PG_HOST=127.0.0.1
+LOCAL_PG_PORT=5432
+LOCAL_PG_DATABASE=coin_trader
+LOCAL_PG_USER=coin_trader
+LOCAL_PG_PASSWORD=coin123$%^
+
+# [Outer] 외부 접속
+OUTER_PG_HOST=218.234.55.78
+OUTER_PG_PORT=5432
+OUTER_PG_DATABASE=coin_trader
+OUTER_PG_USER=coin_trader
+OUTER_PG_PASSWORD=coin123$%^
+```
+
 - **로컬 접속**: `127.0.0.1:5432` / DB: `coin_trader` / User: `coin_trader` / PW: `coin123$%^`
 - **동일 Wi-Fi LAN 접속**: `192.168.0.217:5432`
 - **외부 인터넷 공인 IP 접속**: `218.234.55.78:5432` (공유기 5432 포트포워딩 필요)

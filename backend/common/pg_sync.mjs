@@ -1,14 +1,54 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 
 const { Pool } = pg;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT_DIR = path.resolve(__dirname, "../..");
+const ENV_PATH = path.join(ROOT_DIR, ".env");
+
+function loadEnv() {
+  if (fs.existsSync(ENV_PATH)) {
+    const raw = fs.readFileSync(ENV_PATH, "utf-8");
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx !== -1) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed.slice(eqIdx + 1).trim();
+        if (key && (process.env[key] === undefined || process.env[key] === "")) {
+          process.env[key] = val;
+        }
+      }
+    }
+  }
+}
 
 export class PgSyncManager {
   constructor(config = {}) {
-    this.host = config.host || process.env.PGHOST || "127.0.0.1";
-    this.port = Number(config.port || process.env.PGPORT || 5432);
-    this.database = config.database || process.env.PGDATABASE || "coin_trader";
-    this.user = config.user || process.env.PGUSER || "coin_trader";
-    this.password = config.password || process.env.PGPASSWORD || "coin123$%^";
+    loadEnv();
+
+    const location = (config.location || process.env.LOCATION || "local").trim().toLowerCase();
+    const isOuter = location === "outer";
+
+    this.location = location;
+
+    if (isOuter) {
+      this.host = config.host || process.env.OUTER_PG_HOST || "218.234.55.78";
+      this.port = Number(config.port || process.env.OUTER_PG_PORT || 5432);
+      this.database = config.database || process.env.OUTER_PG_DATABASE || "coin_trader";
+      this.user = config.user || process.env.OUTER_PG_USER || "coin_trader";
+      this.password = config.password || process.env.OUTER_PG_PASSWORD || "coin123$%^";
+    } else {
+      this.host = config.host || process.env.LOCAL_PG_HOST || process.env.PGHOST || "127.0.0.1";
+      this.port = Number(config.port || process.env.LOCAL_PG_PORT || process.env.PGPORT || 5432);
+      this.database = config.database || process.env.LOCAL_PG_DATABASE || process.env.PGDATABASE || "coin_trader";
+      this.user = config.user || process.env.LOCAL_PG_USER || process.env.PGUSER || "coin_trader";
+      this.password = config.password || process.env.LOCAL_PG_PASSWORD || process.env.PGPASSWORD || "coin123$%^";
+    }
 
     this.pool = null;
     this.isConnected = false;
@@ -25,15 +65,15 @@ export class PgSyncManager {
         password: this.password,
         max: 5,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 3000,
+        connectionTimeoutMillis: 4000,
       });
 
       const res = await this.pool.query("SELECT NOW()");
       this.isConnected = true;
-      console.log(`[PgSync] Connected to PostgreSQL '${this.database}' at ${this.host}:${this.port} (${res.rows[0].now})`);
+      console.log(`[PgSync] [LOCATION=${this.location.toUpperCase()}] Connected to PostgreSQL '${this.database}' at ${this.host}:${this.port} (${res.rows[0].now})`);
       return true;
     } catch (err) {
-      console.warn(`[PgSync] PostgreSQL connection failed: ${err.message}. Running in SQLite-only mode.`);
+      console.warn(`[PgSync] [LOCATION=${this.location.toUpperCase()}] PostgreSQL connection failed to ${this.host}:${this.port}: ${err.message}. Running in SQLite-only mode.`);
       this.isConnected = false;
       return false;
     }
