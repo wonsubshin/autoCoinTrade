@@ -618,7 +618,10 @@ export default function App() {
           data.message,
           data.mode === "live" ? "warning" : "info"
         );
-        fetchOverviewAndBots(false);
+        fetchOverviewAndBots(false, data.mode);
+        fetchTrades(selectedBotId, data.mode);
+        fetchStatistics(data.mode);
+        fetchAlgoLabModels();
       } else {
         alert(data.message || "모드 변경에 실패했습니다.");
         setTradeMode((prev) => ({ ...prev, loading: false }));
@@ -629,7 +632,36 @@ export default function App() {
     }
   };
 
-  // 11) 알고리즘 검증소 (Algorithm Validation Lab) 상태
+  // 11) 가상거래(Paper Trading) 전용 초기화 상태 및 핸들러
+  const [paperResetLoading, setPaperResetLoading] = useState(false);
+
+  const handleResetPaperTrades = async () => {
+    const confirmMsg =
+      "⚠️ [가상거래 초기화]\n가상거래 체결 이력(paper_trades)과 가상 포지션을 모두 삭제하고,\n알고리즘 검증소 모델(100만 원)을 초기화하여 처음부터 다시 거래를 시작하시겠습니까?\n\n* 실제 계좌의 거래 내역과 잔고에는 일절 영향을 주지 않습니다.";
+    if (!window.confirm(confirmMsg)) return;
+
+    setPaperResetLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE}/api/paper-trades/reset`, { method: "POST" });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        showModal("가상거래 초기화 완료", data.message, "success");
+        await fetchOverviewAndBots(false, "paper");
+        await fetchTrades(selectedBotId, "paper");
+        await fetchStatistics("paper");
+        await fetchAlgoLabModels();
+        await fetchAlgoLabTrades(selectedAlgoModelId);
+      } else {
+        showModal("초기화 실패", data.message || "오류가 발생했습니다.", "danger");
+      }
+    } catch (err) {
+      showModal("오류", `초기화 요청 중 오류: ${err.message}`, "danger");
+    } finally {
+      setPaperResetLoading(false);
+    }
+  };
+
+  // 12) 알고리즘 검증소 (Algorithm Validation Lab) 상태
   const [algoModels, setAlgoModels] = useState([]);
   const [algoTrades, setAlgoTrades] = useState([]);
   const [selectedAlgoModelId, setSelectedAlgoModelId] = useState("all");
@@ -666,20 +698,24 @@ export default function App() {
   }, [selectedAlgoModelId]);
 
   const handleResetAlgoLab = async () => {
-    if (!window.confirm("알고리즘 검증소의 모든 모델 자본을 1,000,000원으로 초기화하고 가상 거래 기록을 리셋하시겠습니까?")) {
+    if (!window.confirm("알고리즘 검증소 모든 모델(100만 원) 및 가상거래 이력을 초기화하고 처음부터 다시 거래하시겠습니까?")) {
       return;
     }
     setAlgoLabLoading(true);
     try {
-      const resp = await fetch(`${API_BASE}/api/algo-lab/reset`, { method: "POST" });
+      const resp = await fetch(`${API_BASE}/api/paper-trades/reset`, { method: "POST" });
       const data = await resp.json();
       if (resp.ok && data.success) {
-        setAlgoModels(data.models || []);
-        fetchAlgoLabTrades(selectedAlgoModelId);
-        showModal("알고리즘 검증소 초기화", data.message, "info");
+        await fetchAlgoLabModels();
+        await fetchAlgoLabTrades(selectedAlgoModelId);
+        await fetchOverviewAndBots(false, "paper");
+        await fetchTrades(selectedBotId, "paper");
+        showModal("가상거래 및 검증소 초기화 완료", data.message, "success");
+      } else {
+        alert(data.message || "초기화에 실패했습니다.");
       }
     } catch (err) {
-      alert("검증소 초기화 실패: " + err.message);
+      alert("초기화 중 오류: " + err.message);
     } finally {
       setAlgoLabLoading(false);
     }
@@ -911,9 +947,10 @@ export default function App() {
   };
 
   // 시스템 개요 및 봇 정보 조회
-  const fetchOverviewAndBots = async (triggerZeroModalOnTrades = false) => {
+  const fetchOverviewAndBots = async (triggerZeroModalOnTrades = false, targetMode = null) => {
     try {
-      const resp = await fetch(`${API_BASE}/api/system/overview`);
+      const mode = targetMode || tradeMode.mode;
+      const resp = await fetch(`${API_BASE}/api/system/overview?mode=${encodeURIComponent(mode)}`);
       if (!resp.ok) return;
       const data = await resp.json();
       setBots(data.bots || []);
@@ -953,10 +990,11 @@ export default function App() {
     }
   };
 
-  const fetchTrades = async (botId) => {
+  const fetchTrades = async (botId, targetMode = null) => {
     try {
       const targetBot = botId || selectedBotId;
-      const resp = await fetch(`${API_BASE}/api/trades?bot_id=${encodeURIComponent(targetBot)}`);
+      const mode = targetMode || tradeMode.mode;
+      const resp = await fetch(`${API_BASE}/api/trades?bot_id=${encodeURIComponent(targetBot)}&mode=${encodeURIComponent(mode)}`);
       if (!resp.ok) return;
       const data = await resp.json();
       setTrades(data.trades || []);
@@ -974,9 +1012,10 @@ export default function App() {
     }
   };
 
-  const fetchStatistics = async () => {
+  const fetchStatistics = async (targetMode = null) => {
     try {
-      const resp = await fetch(`${API_BASE}/api/statistics`);
+      const mode = targetMode || tradeMode.mode;
+      const resp = await fetch(`${API_BASE}/api/statistics?mode=${encodeURIComponent(mode)}`);
       if (!resp.ok) return;
       const data = await resp.json();
       setStats(data);
@@ -1047,9 +1086,10 @@ export default function App() {
     }
   };
 
-  const refreshBotsStatusOnly = async () => {
+  const refreshBotsStatusOnly = async (targetMode = null) => {
     try {
-      const resp = await fetch(`${API_BASE}/api/bots`);
+      const mode = targetMode || tradeMode.mode;
+      const resp = await fetch(`${API_BASE}/api/bots?mode=${encodeURIComponent(mode)}`);
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data.bots)) {
@@ -1737,21 +1777,35 @@ export default function App() {
                   </div>
                   <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "3px" }}>
                     {tradeMode.mode === "paper"
-                      ? "실제 코인 실시간 지표(호가/캔들)를 사용하여 매수/매도 조건을 평가하고, 가상 원장으로 안전하게 모의 체결합니다."
+                      ? "실거래와 분리된 전용 가상 원장(paper_trades)에 체결 내역이 안전하게 기록됩니다. 초기화 후 처음부터 다시 거래하며 실시간 랭킹을 관찰할 수 있습니다."
                       : "업비트 실계좌 API 키를 통해 실제 원화 잔고로 매수/매도 주문이 거래소에 직접 전송됩니다."}
                   </div>
                 </div>
               </div>
 
-              <button
-                type="button"
-                className={`btn ${tradeMode.mode === "paper" ? "btn-primary" : "btn-stop"}`}
-                onClick={() => handleToggleTradeMode()}
-                disabled={tradeMode.loading}
-                style={{ padding: "8px 16px", fontSize: "12.5px" }}
-              >
-                {tradeMode.loading ? "모드 전환 중..." : tradeMode.mode === "paper" ? "⚡ 실거래 모드로 전환" : "🧪 가상거래 모드로 전환"}
-              </button>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                {tradeMode.mode === "paper" && (
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={handleResetPaperTrades}
+                    disabled={paperResetLoading}
+                    style={{ padding: "8px 14px", fontSize: "12.5px", borderColor: "#818cf8", color: "#c7d2fe" }}
+                    title="가상거래 체결 이력 및 포지션을 삭제하고 알고리즘 검증소 모델(100만 원)을 초기화하여 처음부터 다시 거래합니다."
+                  >
+                    {paperResetLoading ? "초기화 중..." : "🔄 가상거래 이력 초기화"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`btn ${tradeMode.mode === "paper" ? "btn-primary" : "btn-stop"}`}
+                  onClick={() => handleToggleTradeMode()}
+                  disabled={tradeMode.loading}
+                  style={{ padding: "8px 16px", fontSize: "12.5px" }}
+                >
+                  {tradeMode.loading ? "모드 전환 중..." : tradeMode.mode === "paper" ? "⚡ 실거래 모드로 전환" : "🧪 가상거래 모드로 전환"}
+                </button>
+              </div>
             </div>
 
             {/* 거래현황 상단: 업비트 실계좌 조회 요약 (총 매수금액 / 총 평가금액 / 주문 가능 금액) */}
@@ -3490,7 +3544,19 @@ export default function App() {
                       : "현재 모드는 실제 업비트 계좌 실거래입니다! 봇의 매수/매도 주문이 실제 업비트 거래소 API를 통해 실제 원화/코인으로 즉시 체결됩니다. 주의하여 운용하십시오."}
                   </p>
                 </div>
-                <div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                  {tradeMode.mode === "paper" && (
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={handleResetPaperTrades}
+                      disabled={paperResetLoading}
+                      style={{ padding: "8px 14px", fontSize: "13px", borderColor: "#818cf8", color: "#c7d2fe" }}
+                      title="가상 체결 이력 및 포지션을 삭제하고 알고리즘 검증소 모델(100만 원)을 초기화합니다."
+                    >
+                      {paperResetLoading ? "초기화 중..." : "🔄 가상거래 이력 초기화"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={`btn ${tradeMode.mode === "paper" ? "btn-stop" : "btn-primary"}`}

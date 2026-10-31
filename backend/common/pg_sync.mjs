@@ -363,6 +363,101 @@ export class PgSyncManager {
           );
         }
       } catch {}
+
+      // 7. paper_trades and paper_bot_positions (가상거래 전용 테이블)
+      try {
+        await this.pool.query(`
+          CREATE TABLE IF NOT EXISTS paper_trades (
+            id BIGINT PRIMARY KEY,
+            bot_id VARCHAR(64) NOT NULL,
+            market VARCHAR(32) NOT NULL,
+            buy_order_uuid VARCHAR(128) NOT NULL,
+            sell_order_uuid VARCHAR(128),
+            buy_price NUMERIC(16,4) NOT NULL,
+            buy_volume VARCHAR(32) NOT NULL,
+            buy_amount BIGINT NOT NULL,
+            buy_date TIMESTAMP NOT NULL,
+            sell_price NUMERIC(16,4),
+            sell_volume VARCHAR(32),
+            sell_amount BIGINT,
+            sell_date TIMESTAMP,
+            profit_krw BIGINT,
+            profit_pct NUMERIC(8,2),
+            status VARCHAR(16) NOT NULL DEFAULT 'HOLDING'
+          );
+
+          CREATE TABLE IF NOT EXISTS paper_bot_positions (
+            id BIGINT PRIMARY KEY,
+            bot_id VARCHAR(64) NOT NULL,
+            market VARCHAR(32) NOT NULL,
+            order_uuid VARCHAR(128) NOT NULL UNIQUE,
+            volume VARCHAR(32) NOT NULL,
+            avg_buy_price NUMERIC(16,4) NOT NULL,
+            buy_amount BIGINT NOT NULL,
+            buy_fee NUMERIC(16,4) NOT NULL DEFAULT 0,
+            trade_id BIGINT NOT NULL,
+            status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            closed_at TIMESTAMP
+          );
+        `);
+
+        const pTrades = sqliteDb.prepare("SELECT * FROM paper_trades").all();
+        for (const t of pTrades) {
+          await this.pool.query(
+            `INSERT INTO paper_trades (
+               id, bot_id, market, buy_order_uuid, sell_order_uuid,
+               buy_price, buy_volume, buy_amount, buy_date,
+               sell_price, sell_volume, sell_amount, sell_date,
+               profit_krw, profit_pct, status
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+             ON CONFLICT (id) DO UPDATE SET
+               sell_order_uuid = EXCLUDED.sell_order_uuid,
+               sell_price = EXCLUDED.sell_price,
+               sell_volume = EXCLUDED.sell_volume,
+               sell_amount = EXCLUDED.sell_amount,
+               sell_date = EXCLUDED.sell_date,
+               profit_krw = EXCLUDED.profit_krw,
+               profit_pct = EXCLUDED.profit_pct,
+               status = EXCLUDED.status`,
+            [
+              t.id, t.bot_id, t.market, t.buy_order_uuid, t.sell_order_uuid ?? null,
+              Number(t.buy_price), String(t.buy_volume), Math.floor(Number(t.buy_amount)), t.buy_date,
+              t.sell_price !== null && t.sell_price !== undefined ? Number(t.sell_price) : null,
+              t.sell_volume ?? null,
+              t.sell_amount !== null && t.sell_amount !== undefined ? Math.floor(Number(t.sell_amount)) : null,
+              t.sell_date ?? null,
+              t.profit_krw !== null && t.profit_krw !== undefined ? Math.floor(Number(t.profit_krw)) : null,
+              t.profit_pct !== null && t.profit_pct !== undefined ? Number(t.profit_pct) : null,
+              t.status || "HOLDING"
+            ]
+          );
+        }
+
+        const pPositions = sqliteDb.prepare("SELECT * FROM paper_bot_positions").all();
+        for (const p of pPositions) {
+          await this.pool.query(
+            `INSERT INTO paper_bot_positions (
+               id, bot_id, market, order_uuid, volume,
+               avg_buy_price, buy_amount, buy_fee, trade_id,
+               status, created_at, closed_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             ON CONFLICT (order_uuid) DO UPDATE SET
+               volume = EXCLUDED.volume,
+               avg_buy_price = EXCLUDED.avg_buy_price,
+               buy_amount = EXCLUDED.buy_amount,
+               buy_fee = EXCLUDED.buy_fee,
+               status = EXCLUDED.status,
+               closed_at = EXCLUDED.closed_at`,
+            [
+              p.id, p.bot_id, p.market, p.order_uuid, String(p.volume),
+              Number(p.avg_buy_price), Math.floor(Number(p.buy_amount)),
+              Number(p.buy_fee || 0), Number(p.trade_id),
+              p.status || "OPEN", p.created_at, p.closed_at ?? null
+            ]
+          );
+        }
+      } catch {}
     } catch (err) {
       console.warn(`[PgSync] Sync error: ${err.message}`);
     }

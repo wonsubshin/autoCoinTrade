@@ -160,7 +160,61 @@ function initializeDatabase() {
       briefing_text TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    -- 가상거래(Paper Trading) 전용 분리 원장 테이블
+    CREATE TABLE IF NOT EXISTS paper_trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_id TEXT NOT NULL,
+      market TEXT NOT NULL,
+      buy_order_uuid TEXT NOT NULL,
+      sell_order_uuid TEXT,
+      buy_price REAL NOT NULL,
+      buy_volume TEXT NOT NULL,
+      buy_amount INTEGER NOT NULL,
+      buy_date TEXT NOT NULL,
+      sell_price REAL,
+      sell_volume TEXT,
+      sell_amount INTEGER,
+      sell_date TEXT,
+      profit_krw INTEGER,
+      profit_pct REAL,
+      status TEXT NOT NULL DEFAULT 'HOLDING'
+    );
+
+    CREATE TABLE IF NOT EXISTS paper_bot_positions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_id TEXT NOT NULL,
+      market TEXT NOT NULL,
+      order_uuid TEXT NOT NULL UNIQUE,
+      volume TEXT NOT NULL,
+      avg_buy_price REAL NOT NULL,
+      buy_amount INTEGER NOT NULL,
+      buy_fee REAL NOT NULL DEFAULT 0,
+      trade_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'OPEN',
+      created_at TEXT NOT NULL,
+      closed_at TEXT
+    );
   `);
+
+  // 기존 trades / bot_positions 에 기록된 가상거래(paper-*) 내역을 전용 테이블로 분리 이전
+  try {
+    db.exec(`
+      INSERT OR IGNORE INTO paper_trades (id, bot_id, market, buy_order_uuid, sell_order_uuid, buy_price, buy_volume, buy_amount, buy_date, sell_price, sell_volume, sell_amount, sell_date, profit_krw, profit_pct, status)
+      SELECT id, bot_id, market, buy_order_uuid, sell_order_uuid, buy_price, buy_volume, buy_amount, buy_date, sell_price, sell_volume, sell_amount, sell_date, profit_krw, profit_pct, status
+      FROM trades WHERE buy_order_uuid LIKE 'paper-%' OR sell_order_uuid LIKE 'paper-%';
+
+      DELETE FROM trades WHERE buy_order_uuid LIKE 'paper-%' OR sell_order_uuid LIKE 'paper-%';
+
+      INSERT OR IGNORE INTO paper_bot_positions (id, bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at, closed_at)
+      SELECT id, bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at, closed_at
+      FROM bot_positions WHERE order_uuid LIKE 'paper-%';
+
+      DELETE FROM bot_positions WHERE order_uuid LIKE 'paper-%';
+    `);
+  } catch (err) {
+    console.warn("[Migration] Paper trades separation:", err.message);
+  }
 
   // 알고리즘 검증소(Algorithm Lab) 테이블 및 모델 초기화
   initAlgoLabTables(db);
@@ -333,28 +387,57 @@ function getSetting(key, defaultVal = "") {
   return row ? row.value : defaultVal;
 }
 
-function getBots() {
+function isLiveMode() {
+  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  } catch {}
+  return (
+    String(cfg.trade_mode || "").toLowerCase() === "live" &&
+    cfg.access_key &&
+    cfg.secret_key &&
+    cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY" &&
+    String(cfg.access_key).trim() !== ""
+  );
+}
+
+function getPositionsTableName(mode = null) {
+  const m = mode || (isLiveMode() ? "live" : "paper");
+  return m === "live" ? "bot_positions" : "paper_bot_positions";
+}
+
+function getTradesTableName(mode = null) {
+  const m = mode || (isLiveMode() ? "live" : "paper");
+  return m === "live" ? "trades" : "paper_trades";
+}
+
+function getBots(mode = null) {
   const db = getDb();
+  if (!db) return [];
   const rows = db.prepare("SELECT * FROM bots ORDER BY bot_id ASC").all();
+  const posTable = getPositionsTableName(mode);
   return rows.map((r) => {
     let config = {};
     try {
       config = JSON.parse(r.config_json || "{}");
     } catch {}
     const openPositions = db
-      .prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND status = 'OPEN' ORDER BY id DESC")
+      .prepare(`SELECT * FROM ${posTable} WHERE bot_id = ? AND status = 'OPEN' ORDER BY id DESC`)
       .all(r.bot_id);
     const usedCapital = Math.floor(
       openPositions.reduce((acc, p) => acc + Number(p.buy_amount || 0), 0)
     );
-    return { ...r, config, open_positions: openPositions, used_capital: usedCapital };
+    const virtualKrw = Math.max(0, Math.floor(Number(r.allocated_capital || 0) - usedCapital));
+    return { ...r, virtual_krw: virtualKrw, config, open_positions: openPositions, used_capital: usedCapital };
   });
 }
 
-function recalculateAndApplyBotAllocations(flooredTotal, ratiosMap = null) {
+function recalculateAndApplyBotAllocations(flooredTotal, ratiosMap = null, mode = null) {
   const db = getDb();
   const now = nowKSTString();
-  const bots = getBots();
+  const bots = getBots(mode);
+  const tradesTable = getTradesTableName(mode);
   const items = bots.map((b) => {
     const used = Math.floor(Number(b.used_capital || 0));
     const ratio = Math.max(
@@ -362,7 +445,7 @@ function recalculateAndApplyBotAllocations(flooredTotal, ratiosMap = null) {
       Number(ratiosMap && ratiosMap[b.bot_id] !== undefined ? ratiosMap[b.bot_id] : b.allocation_ratio || 0)
     );
     const pnlRow = db
-      .prepare("SELECT COALESCE(SUM(profit_krw), 0) AS total_pnl FROM trades WHERE bot_id = ? AND status = 'COMPLETED'")
+      .prepare(`SELECT COALESCE(SUM(profit_krw), 0) AS total_pnl FROM ${tradesTable} WHERE bot_id = ? AND status = 'COMPLETED'`)
       .get(b.bot_id);
     const realizedPnl = Math.floor(Number(pnlRow?.total_pnl || 0));
     return {
@@ -459,16 +542,17 @@ function recalculateAndApplyBotAllocations(flooredTotal, ratiosMap = null) {
   };
 }
 
-function checkAndHaltIfZeroBalance() {
+function checkAndHaltIfZeroBalance(mode = null) {
   const db = getDb();
   const configured = getSetting("capital_configured", "0") === "1";
   if (!configured) {
     return { halted: false, reason: "" };
   }
   const totalCapital = Math.floor(Number(getSetting("total_capital", "0")));
-  const bots = getBots();
+  const bots = getBots(mode);
   const totalVirtual = bots.reduce((acc, b) => acc + Number(b.virtual_krw || 0), 0);
-  const openPosCnt = db.prepare("SELECT COUNT(*) AS cnt FROM bot_positions WHERE status = 'OPEN'").get().cnt;
+  const posTable = getPositionsTableName(mode);
+  const openPosCnt = db.prepare(`SELECT COUNT(*) AS cnt FROM ${posTable} WHERE status = 'OPEN'`).get().cnt;
 
   let shouldHalt = false;
   let reason = "";
@@ -1683,20 +1767,24 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === "/api/system/overview" && req.method === "GET") {
-      const haltInfo = checkAndHaltIfZeroBalance();
+      const mode = parsedUrl.searchParams.get("mode") || (isLiveMode() ? "live" : "paper");
+      const haltInfo = checkAndHaltIfZeroBalance(mode);
       return sendJson(res, 200, {
+        mode,
         total_capital: Math.floor(Number(getSetting("total_capital", "0"))),
         zero_balance_halted: haltInfo.halted,
         zero_balance_reason: haltInfo.reason,
         stats_start_date: getSetting("stats_start_date", "2026-10-01"),
-        bots: getBots(),
+        bots: getBots(mode),
       });
     }
 
     if (pathname === "/api/bots" && req.method === "GET") {
-      const haltInfo = checkAndHaltIfZeroBalance();
+      const mode = parsedUrl.searchParams.get("mode") || (isLiveMode() ? "live" : "paper");
+      const haltInfo = checkAndHaltIfZeroBalance(mode);
       return sendJson(res, 200, {
-        bots: getBots(),
+        mode,
+        bots: getBots(mode),
         zero_balance_halted: haltInfo.halted,
         zero_balance_reason: haltInfo.reason,
       });
@@ -1850,11 +1938,14 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/trades" && req.method === "GET") {
       const botId = parsedUrl.searchParams.get("bot_id");
-      const haltInfo = checkAndHaltIfZeroBalance();
+      const mode = parsedUrl.searchParams.get("mode") || (isLiveMode() ? "live" : "paper");
+      const tradesTable = mode === "live" ? "trades" : "paper_trades";
+      const haltInfo = checkAndHaltIfZeroBalance(mode);
       const trades = botId
-        ? db.prepare("SELECT * FROM trades WHERE bot_id = ? ORDER BY buy_date DESC, id DESC").all(botId)
-        : db.prepare("SELECT * FROM trades ORDER BY buy_date DESC, id DESC").all();
+        ? db.prepare(`SELECT * FROM ${tradesTable} WHERE bot_id = ? ORDER BY buy_date DESC, id DESC`).all(botId)
+        : db.prepare(`SELECT * FROM ${tradesTable} ORDER BY buy_date DESC, id DESC`).all();
       return sendJson(res, 200, {
+        mode,
         trades,
         zero_balance_halted: haltInfo.halted,
         zero_balance_reason: haltInfo.reason,
@@ -1862,9 +1953,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === "/api/statistics" && req.method === "GET") {
+      const mode = parsedUrl.searchParams.get("mode") || (isLiveMode() ? "live" : "paper");
+      const tradesTable = mode === "live" ? "trades" : "paper_trades";
       const startDate = "2026-10-01";
       const trades = db
-        .prepare("SELECT * FROM trades WHERE substr(buy_date, 1, 10) >= ? ORDER BY COALESCE(sell_date, buy_date) ASC")
+        .prepare(`SELECT * FROM ${tradesTable} WHERE substr(buy_date, 1, 10) >= ? ORDER BY COALESCE(sell_date, buy_date) ASC`)
         .all(startDate);
       const dailyMap = { "2026-10-01": 0 };
       const weeklyMap = {};
@@ -2230,12 +2323,70 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // ============================================================
+    // [가상거래 초기화 (Paper Trades & Algo Lab Clean Reset) API]
+    // ============================================================
+    if (pathname === "/api/paper-trades/reset" && req.method === "POST") {
+      try {
+        db.exec(`
+          DELETE FROM paper_trades;
+          DELETE FROM paper_bot_positions;
+        `);
+        resetAlgoLab(db);
+        db.prepare(`
+          UPDATE bots
+          SET last_status_msg = '가상거래 초기화 완료 (새 거래 대기 중)',
+              updated_at = ?
+          WHERE 1=1
+        `).run(nowKSTString());
+
+        if (pgSyncManager.isConnected && pgSyncManager.pool) {
+          try {
+            await pgSyncManager.pool.query(`
+              DELETE FROM paper_trades;
+              DELETE FROM paper_bot_positions;
+              DELETE FROM algo_lab_positions;
+              DELETE FROM algo_lab_trades;
+            `);
+          } catch {}
+        }
+
+        // 즉시 새로운 가상 사이클 실행하여 0원부터 실시간 랭킹 산출 시작
+        setTimeout(async () => {
+          try {
+            await runBotStrategiesCycle();
+            await executeAlgoLabCycle();
+          } catch {}
+        }, 100);
+
+        return sendJson(res, 200, {
+          success: true,
+          message: "가상거래 이력 및 알고리즘 검증소가 성공적으로 초기화되었습니다. 실시간 시세를 바탕으로 처음부터 모의 체결 및 실시간 랭킹 산출이 시작됩니다.",
+        });
+      } catch (err) {
+        return sendJson(res, 500, { success: false, message: `가상거래 초기화 실패: ${err.message}` });
+      }
+    }
+
     if (pathname === "/api/algo-lab/reset" && req.method === "POST") {
       resetAlgoLab(db);
+      if (pgSyncManager.isConnected && pgSyncManager.pool) {
+        try {
+          await pgSyncManager.pool.query(`
+            DELETE FROM algo_lab_positions;
+            DELETE FROM algo_lab_trades;
+          `);
+        } catch {}
+      }
+      setTimeout(async () => {
+        try {
+          await executeAlgoLabCycle();
+        } catch {}
+      }, 100);
       const models = getAlgoLabModels(db);
       return sendJson(res, 200, {
         success: true,
-        message: "알고리즘 검증소 모든 모델이 초기 자본 1,000,000원으로 초기화되었습니다.",
+        message: "알고리즘 검증소 모든 모델이 초기 자본 1,000,000원으로 초기화되었습니다. 실시간 시세로 재평가를 시작합니다.",
         models,
       });
     }
@@ -2476,9 +2627,12 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
   const latestBot = getBots().find((b) => b.bot_id === bot.bot_id);
   if (!latestBot || Number(latestBot.virtual_krw || 0) < orderKrw) return false;
 
+  const isLive = isLiveMode();
+  const posTable = isLive ? "bot_positions" : "paper_bot_positions";
+
   // 현재 OPEN 포지션 투자 합계가 할당 원금(allocated_capital)을 초과하지 않도록 엄격 검증
   const invRow = db
-    .prepare("SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'")
+    .prepare(`SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM ${posTable} WHERE bot_id = ? AND status = 'OPEN'`)
     .get(bot.bot_id);
   const currentInvested = Number(invRow?.invested || 0);
   if (currentInvested + orderKrw > Number(latestBot.allocated_capital || 0)) {
@@ -2490,15 +2644,10 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
   try {
     cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
   } catch {}
-  const isLive =
-    String(cfg.trade_mode || "").toLowerCase() === "live" &&
-    cfg.access_key &&
-    cfg.secret_key &&
-    cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY";
 
   if (!isLive) {
     // [가상거래 모드 (Paper Trading)]
-    // 실제 업비트 코인 지표(현재가, best bid)를 사용하여 즉시 가상 매수 체결
+    // 분리된 전용 가상 원장(paper_trades, paper_bot_positions)에 체결 기록
     const bestBidPrice = (await fetchUpbitBestBidPrice(market, currentPrice)) || currentPrice;
     if (!bestBidPrice || bestBidPrice <= 0) return false;
 
@@ -2514,7 +2663,7 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
     const now = nowKSTString();
 
     const insertTrade = db.prepare(`
-      INSERT INTO trades (
+      INSERT INTO paper_trades (
         bot_id, market, buy_order_uuid, buy_price, buy_volume, buy_amount, buy_date, status
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'HOLDING')
     `);
@@ -2530,7 +2679,7 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
     const tradeId = Number(tradeRes.lastInsertRowid);
 
     const insertPos = db.prepare(`
-      INSERT INTO bot_positions (
+      INSERT INTO paper_bot_positions (
         bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
     `);
@@ -2548,14 +2697,14 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
 
     const inv = db
       .prepare(
-        "SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'"
+        "SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM paper_bot_positions WHERE bot_id = ? AND status = 'OPEN'"
       )
       .get(bot.bot_id);
     const newVirtualKrw = Math.max(0, Math.floor(Number(latestBot.allocated_capital || 0) - Number(inv?.invested || 0)));
 
     db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
       newVirtualKrw,
-      `[가상체결] ${market} ${bestBidPrice.toLocaleString("ko-KR")}원 매수 체결 (${actualBuyAmount.toLocaleString("ko-KR")}원 / 잔여 가상잔고 ${newVirtualKrw.toLocaleString("ko-KR")}원)`,
+      `[가상체결] ${market} ${bestBidPrice.toLocaleString("ko-KR")}원 매수 체결 (${actualBuyAmount.toLocaleString("ko-KR")}원 / 가상잔고 ${newVirtualKrw.toLocaleString("ko-KR")}원)`,
       now,
       bot.bot_id
     );
@@ -2754,30 +2903,20 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
 
 async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
   const db = getDb();
-  // 이미 이전 루프(동일 코인 통합 매도 등)에서 CLOSED 처리된 포지션이면 스킵
-  const currentPos = db
-    .prepare("SELECT * FROM bot_positions WHERE id = ? AND bot_id = ? AND status = 'OPEN'")
-    .get(pos.id, bot.bot_id);
-  if (!currentPos) {
-    return false;
-  }
-
-  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
-  let cfg = {};
-  try {
-    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
-  } catch {}
-  const isLive =
-    String(cfg.trade_mode || "").toLowerCase() === "live" &&
-    cfg.access_key &&
-    cfg.secret_key &&
-    cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY";
+  const isLive = isLiveMode();
 
   if (!isLive) {
     // [가상거래 모드 (Paper Trading)]
-    // 실제 업비트 코인 지표(현재가 sellPrice)를 사용하여 가상 매도 체결
+    // 분리된 전용 가상 원장(paper_bot_positions, paper_trades)에서 매도 체결
+    const currentPos = db
+      .prepare("SELECT * FROM paper_bot_positions WHERE id = ? AND bot_id = ? AND status = 'OPEN'")
+      .get(pos.id, bot.bot_id);
+    if (!currentPos) {
+      return false;
+    }
+
     const sameMarketOpenPositions = db
-      .prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND market = ? AND status = 'OPEN' ORDER BY id ASC")
+      .prepare("SELECT * FROM paper_bot_positions WHERE bot_id = ? AND market = ? AND status = 'OPEN' ORDER BY id ASC")
       .all(bot.bot_id, currentPos.market);
 
     const targetPositions = sameMarketOpenPositions.length > 0 ? sameMarketOpenPositions : [currentPos];
@@ -2802,9 +2941,9 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
         : 0;
       totalProfitKrw += profitKrw;
 
-      db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(now, p.id);
+      db.prepare("UPDATE paper_bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(now, p.id);
       db.prepare(`
-        UPDATE trades
+        UPDATE paper_trades
         SET sell_order_uuid = ?, sell_price = ?, sell_volume = ?, sell_amount = ?, sell_date = ?, profit_krw = ?, profit_pct = ?, status = 'COMPLETED'
         WHERE id = ?
       `).run(sellUuid, Number(sellPrice), String(p.volume), posGrossFunds, now, profitKrw, profitPct, p.trade_id);
@@ -2813,7 +2952,7 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
     const latestBot = db.prepare("SELECT allocated_capital FROM bots WHERE bot_id = ?").get(bot.bot_id);
     const inv = db
       .prepare(
-        "SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'"
+        "SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM paper_bot_positions WHERE bot_id = ? AND status = 'OPEN'"
       )
       .get(bot.bot_id);
     const newVirtualKrw = Math.max(0, Math.floor(Number(latestBot?.allocated_capital || 0) - Number(inv?.invested || 0)));
@@ -2824,9 +2963,24 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
       now,
       bot.bot_id
     );
-    checkAndHaltIfZeroBalance();
+    checkAndHaltIfZeroBalance("paper");
     return true;
   }
+
+  // [실거래 모드 (Live Trading)]
+  // 이미 이전 루프(동일 코인 통합 매도 등)에서 CLOSED 처리된 포지션이면 스킵
+  const currentPos = db
+    .prepare("SELECT * FROM bot_positions WHERE id = ? AND bot_id = ? AND status = 'OPEN'")
+    .get(pos.id, bot.bot_id);
+  if (!currentPos) {
+    return false;
+  }
+
+  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  } catch {}
 
   // 동일 봇·동일 마켓의 OPEN 포지션 조회
   // 개별 포지션이 최소주문금액(5,000원) 부근(<= 5,500원)이거나 동일 마켓 복수 분할 포지션이 있을 때
@@ -3235,6 +3389,9 @@ async function runBotStrategiesCycle() {
 }
 
 async function reconcileOpenPositionsWithUpbit() {
+  if (!isLiveMode()) {
+    return;
+  }
   const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
   let cfg = {};
   try {

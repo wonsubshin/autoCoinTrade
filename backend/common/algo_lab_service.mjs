@@ -678,8 +678,8 @@ export function resetAlgoLab(sqliteDb) {
         lose_trades = 0,
         total_trades = 0,
         win_rate_pct = 0.0,
-        last_signal_text = '검증소 초기화 완료 (100만원 리셋)',
+        last_signal_text = '검증소 초기화 완료 (100만원 리셋 - 실시간 검증 시작)',
         updated_at = datetime('now', 'localtime');
   `);
-  seedInitialDemoTrades(sqliteDb);
 }
+
