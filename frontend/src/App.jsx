@@ -1417,32 +1417,34 @@ export default function App() {
     <div className="app-layout">
       {/* 좌측 메뉴 영역 (20%) */}
       <aside className="left-sidebar">
-        <div className="brand-header">Upbit AutoTrade</div>
+        <div className="sidebar-top-section">
+          <div className="brand-header">Upbit AutoTrade</div>
 
-        {/* 요구사항 19: 메뉴 상단 업비트 통신 상태 식별 영역 (초록/노랑/빨강 + 마우스 오버 사유 표기) */}
-        <div className="upbit-status-box">
-          <div className="status-header-row">
-            <span className="status-title">업비트 Open API 통신 상태</span>
-            <div className="status-indicator-wrap">
-              <span className={`status-dot ${upbitStatus.status || "green"}`} />
-              <span className={`status-label-text ${upbitStatus.status || "green"}`}>
-                {upbitStatus.label || "정상통신"}
-              </span>
+          {/* 요구사항 19: 메뉴 상단 업비트 통신 상태 식별 영역 (초록/노랑/빨강 + 마우스 오버 사유 표기) */}
+          <div className="upbit-status-box">
+            <div className="status-header-row">
+              <span className="status-title">업비트 Open API 통신 상태</span>
+              <div className="status-indicator-wrap">
+                <span className={`status-dot ${upbitStatus.status || "green"}`} />
+                <span className={`status-label-text ${upbitStatus.status || "green"}`}>
+                  {upbitStatus.label || "정상통신"}
+                </span>
+              </div>
             </div>
-          </div>
-          <div style={{ fontSize: "11.5px", color: "#94a3b8" }}>
-            마우스를 올리면 상세 통신 사유를 확인합니다.
-          </div>
+            <div className="status-help-hint" style={{ fontSize: "11.5px", color: "#94a3b8" }}>
+              마우스를 올리면 상세 통신 사유를 확인합니다.
+            </div>
 
-          {/* 마우스 오버 시 나타나는 상세 이유 툴팁 */}
-          <div className="status-Tooltip">
-            <div style={{ fontWeight: 700, marginBottom: "6px", color: "#fff" }}>
-              [통신 상태 상세 사유]
+            {/* 마우스 오버 시 나타나는 상세 이유 툴팁 */}
+            <div className="status-Tooltip">
+              <div style={{ fontWeight: 700, marginBottom: "6px", color: "#fff" }}>
+                [통신 상태 상세 사유]
+              </div>
+              <div>• 상태: {upbitStatus.label}</div>
+              <div>• 사유: {upbitStatus.reason}</div>
+              <div>• 응답속도: {upbitStatus.latency_ms ?? 0} ms</div>
+              <div>• 최근확인: {upbitStatus.checked_at || "-"}</div>
             </div>
-            <div>• 상태: {upbitStatus.label}</div>
-            <div>• 사유: {upbitStatus.reason}</div>
-            <div>• 응답속도: {upbitStatus.latency_ms ?? 0} ms</div>
-            <div>• 최근확인: {upbitStatus.checked_at || "-"}</div>
           </div>
         </div>
 
@@ -1704,7 +1706,7 @@ export default function App() {
                   )}
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <div className="ai-briefing-action-btns">
                   <button
                     type="button"
                     className="btn"
@@ -2097,6 +2099,8 @@ export default function App() {
                   justifyContent: "space-between",
                   alignItems: "center",
                   marginBottom: "14px",
+                  flexWrap: "wrap",
+                  gap: "8px",
                 }}
               >
                 <h3 style={{ fontSize: "16px", fontWeight: 700 }}>
@@ -2353,7 +2357,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <div className="news-ai-action-btns">
                   <button
                     type="button"
                     className="btn btn-primary"
@@ -2453,9 +2457,9 @@ export default function App() {
             {/* 검색 및 필터 카드 (날짜 범위, 키워드 검색, 태그 필터) */}
             <div className="card" style={{ marginBottom: "16px" }}>
               <form onSubmit={handleSearchNews}>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "flex-end" }}>
+                <div className="news-filter-grid">
                   {/* 날짜 범위: 시작일 */}
-                  <div style={{ flex: "1 1 140px", minWidth: "140px" }}>
+                  <div className="news-date-col">
                     <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" }}>
                       📅 시작일
                     </label>
@@ -2469,7 +2473,7 @@ export default function App() {
                   </div>
 
                   {/* 날짜 범위: 종료일 */}
-                  <div style={{ flex: "1 1 140px", minWidth: "140px" }}>
+                  <div className="news-date-col">
                     <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" }}>
                       📅 종료일
                     </label>
@@ -2483,7 +2487,7 @@ export default function App() {
                   </div>
 
                   {/* 키워드 검색창 */}
-                  <div style={{ flex: "3 1 260px", minWidth: "220px" }}>
+                  <div className="news-keyword-col">
                     <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" }}>
                       🔍 키워드 검색 (제목, 요약, 언론사, 해시태그)
                     </label>
@@ -2498,7 +2502,7 @@ export default function App() {
                   </div>
 
                   {/* 검색 & 초기화 버튼 */}
-                  <div style={{ display: "flex", gap: "8px" }}>
+                  <div className="news-btn-col">
                     <button
                       type="submit"
                       className="btn btn-primary"
@@ -2518,7 +2522,7 @@ export default function App() {
                 </div>
 
                 {/* 추천 키워드 태그 클릭 바로가기 */}
-                <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <div className="news-popular-tags-wrap" style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                   <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>인기 태그:</span>
                   {[
                     "#비트코인",

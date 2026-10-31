@@ -103,6 +103,11 @@ body {
   width: 100%;
 }
 
+.sidebar-top-section {
+  display: flex;
+  flex-direction: column;
+}
+
 .left-sidebar {
   flex: 0 0 20%;
   width: 20%;
@@ -643,6 +648,330 @@ body {
   margin-left: 3px;
   vertical-align: middle;
   animation: cursorBlink 1s infinite;
+}
+
+/* 뉴스 필터 데스크탑 기본 스타일 */
+.news-filter-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.news-date-col {
+  flex: 1 1 140px;
+  min-width: 140px;
+}
+
+.news-keyword-col {
+  flex: 3 1 260px;
+  min-width: 220px;
+}
+
+.news-btn-col {
+  display: flex;
+  gap: 8px;
+}
+
+.news-ai-action-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-briefing-action-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ============================================================
+   모바일 반응형 레이아웃 (@media max-width: 860px)
+   - 모바일 환경에서 좌측 사이드바와 우측 본문 영역의 압축 현상 해결
+   - 상단 고정 네비게이션 바로 전환하여 4개 메뉴 탭(100% 폭) 제공
+   - 우측 본문 영역 전체 너비(100%) 확장 및 가로 스크롤 테이블 지원
+   ============================================================ */
+@media (max-width: 860px) {
+  .app-layout {
+    flex-direction: column;
+    min-height: 100vh;
+    width: 100%;
+    overflow-x: hidden;
+  }
+
+  /* 상단 고정 헤더 겸 네비게이션 바로 전환 */
+  .left-sidebar {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 100%;
+    max-width: 100%;
+    position: sticky;
+    top: 0;
+    z-index: 500;
+    padding: 10px 14px 8px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+    background-color: rgba(17, 24, 39, 0.96);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+
+  .sidebar-top-section {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    width: 100%;
+  }
+
+  .brand-header {
+    font-size: 15px;
+    font-weight: 800;
+    padding: 0;
+    border-bottom: none;
+    margin-bottom: 0;
+  }
+
+  .upbit-status-box {
+    margin-bottom: 0;
+    padding: 5px 10px;
+    border-radius: 8px;
+  }
+
+  .status-header-row {
+    margin-bottom: 0;
+  }
+
+  .status-title,
+  .status-help-hint {
+    display: none;
+  }
+
+  .status-indicator-wrap {
+    gap: 6px;
+  }
+
+  .status-dot {
+    width: 9px;
+    height: 9px;
+  }
+
+  .status-label-text {
+    font-size: 12px;
+  }
+
+  .status-Tooltip {
+    right: 0;
+    left: auto;
+    width: min(280px, calc(100vw - 28px));
+  }
+
+  /* 모바일 4단 메뉴 버튼 그리드 */
+  .menu-list {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    width: 100%;
+    flex: none;
+  }
+
+  .menu-btn {
+    padding: 8px 4px;
+    font-size: 12.5px;
+    justify-content: center;
+    gap: 4px;
+    border-radius: 8px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .sidebar-footer {
+    display: none;
+  }
+
+  /* 우측 상세 화면 영역 100% 전체 너비 확장 */
+  .right-content {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    padding: 14px 10px 36px;
+    overflow-x: hidden;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 14px;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .page-desc {
+    font-size: 12px;
+  }
+
+  .card {
+    padding: 14px 12px;
+    margin-bottom: 14px;
+    border-radius: 12px;
+  }
+
+  /* 봇별 탭 바 터치 가로 스크롤 */
+  .tab-bar {
+    gap: 6px;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+  }
+
+  .tab-btn {
+    padding: 7px 12px;
+    font-size: 13px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* 테이블 가로 스크롤 및 컬럼 너비 보존 */
+  .table-container {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 8px;
+  }
+
+  .board-table {
+    min-width: 620px;
+    font-size: 12.5px;
+  }
+
+  .board-table th,
+  .board-table td {
+    padding: 10px 10px;
+  }
+
+  .news-board-table {
+    min-width: 680px;
+  }
+
+  .news-board-table th,
+  .news-board-table td {
+    padding: 0 10px;
+  }
+
+  /* 봇 컨트롤 패널 */
+  .bot-control-panel {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .bot-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    width: 100%;
+  }
+
+  .btn-group {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .btn-group .btn {
+    flex: 1 1 calc(50% - 6px);
+    justify-content: center;
+    text-align: center;
+    padding: 9px 8px;
+    font-size: 13px;
+  }
+
+  /* 뉴스 검색 및 필터 모바일 2열 + 1열 그리드 */
+  .news-filter-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .news-date-col {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .news-keyword-col {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .news-btn-col {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .news-btn-col .btn {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+
+  /* 뉴스 AI 분석 박스 모바일 대응 */
+  .news-ai-box {
+    padding: 14px 12px;
+  }
+
+  .news-ai-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .news-ai-action-btns {
+    display: flex;
+    width: 100%;
+    gap: 8px;
+  }
+
+  .news-ai-action-btns .btn-primary {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .news-ai-action-btns .btn-outline {
+    flex: 0 0 auto;
+  }
+
+  .ai-briefing-action-btns {
+    display: flex;
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .ai-briefing-action-btns .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .gate-card {
+    padding: 24px 18px;
+    max-width: 100%;
+  }
 }
 
 
