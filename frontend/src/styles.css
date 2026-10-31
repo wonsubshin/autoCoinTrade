@@ -232,6 +232,147 @@ body {
   color: #e2e8f0;
 }
 
+/* 실시간 거래 모드 칩 토글 버튼 */
+.trade-mode-chip-container {
+  margin-top: 10px;
+}
+
+.mode-toggle-chip {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.mode-toggle-chip.chip-paper {
+  background: rgba(99, 102, 241, 0.16);
+  border-color: rgba(99, 102, 241, 0.45);
+  color: #c7d2fe;
+}
+
+.mode-toggle-chip.chip-paper:hover {
+  background: rgba(99, 102, 241, 0.26);
+  border-color: #818cf8;
+}
+
+.mode-toggle-chip.chip-live {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+}
+
+.mode-toggle-chip.chip-live:hover {
+  background: rgba(239, 68, 68, 0.26);
+  border-color: #f87171;
+}
+
+.mode-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mode-dot.paper {
+  background: #818cf8;
+  box-shadow: 0 0 8px #818cf8;
+}
+
+.mode-dot.live {
+  background: #ef4444;
+  box-shadow: 0 0 8px #ef4444;
+}
+
+.mode-text {
+  flex: 1;
+  text-align: left;
+  font-size: 11.5px;
+}
+
+.mode-switch-hint {
+  font-size: 10px;
+  opacity: 0.8;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+/* 검증소 TOP 3 랭킹 포디움 카드 */
+.podium-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.podium-card {
+  border-radius: 12px;
+  padding: 16px;
+  background: #111827;
+  border: 1px solid #1f2937;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.podium-card:hover {
+  transform: translateY(-2px);
+}
+
+.podium-card.gold {
+  background: linear-gradient(145deg, #1e1b11 0%, #171c26 100%);
+  border-color: rgba(234, 179, 8, 0.55);
+  box-shadow: 0 4px 20px rgba(234, 179, 8, 0.15);
+}
+
+.podium-card.silver {
+  background: linear-gradient(145deg, #1c2128 0%, #131720 100%);
+  border-color: rgba(148, 163, 184, 0.55);
+  box-shadow: 0 4px 16px rgba(148, 163, 184, 0.12);
+}
+
+.podium-card.bronze {
+  background: linear-gradient(145deg, #241914 0%, #151821 100%);
+  border-color: rgba(217, 119, 6, 0.55);
+  box-shadow: 0 4px 16px rgba(217, 119, 6, 0.12);
+}
+
+.podium-badge {
+  font-size: 11.5px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.podium-badge.gold {
+  background: rgba(234, 179, 8, 0.2);
+  color: #fde047;
+  border: 1px solid rgba(234, 179, 8, 0.5);
+}
+
+.podium-badge.silver {
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
+.podium-badge.bronze {
+  background: rgba(217, 119, 6, 0.2);
+  color: #fdba74;
+  border: 1px solid rgba(217, 119, 6, 0.4);
+}
+
 .menu-list {
   display: flex;
   flex-direction: column;
@@ -767,23 +908,40 @@ body {
     width: min(280px, calc(100vw - 28px));
   }
 
-  /* 모바일 4단 메뉴 버튼 그리드 */
+  /* 모바일 거래 모드 칩 */
+  .trade-mode-chip-container {
+    margin-top: 6px;
+    margin-bottom: 6px;
+  }
+
+  .mode-toggle-chip {
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+
+  /* 모바일 5단 메뉴 버튼 그리드 */
   .menu-list {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
     width: 100%;
     flex: none;
   }
 
   .menu-btn {
-    padding: 8px 4px;
-    font-size: 12.5px;
+    padding: 7px 2px;
+    font-size: 11px;
     justify-content: center;
-    gap: 4px;
+    gap: 2px;
     border-radius: 8px;
     text-align: center;
     white-space: nowrap;
+  }
+
+  /* 모바일 검증소 포디움 1열 배치 */
+  .podium-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 
   .sidebar-footer {

@@ -565,6 +565,142 @@ export default function App() {
     setModalInfo((prev) => ({ ...prev, open: false }));
   };
 
+  // 10) 거래 모드 상태 (가상거래 모의투자 'paper' vs 실거래 'live')
+  const [tradeMode, setTradeMode] = useState({
+    mode: "live",
+    is_live: true,
+    has_keys: true,
+    loading: false,
+    message: "",
+  });
+
+  const fetchTradeMode = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/trade-mode`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setTradeMode((prev) => ({
+        ...prev,
+        mode: data.mode || "live",
+        is_live: !!data.is_live,
+        has_keys: !!data.has_keys,
+        message: data.message || "",
+      }));
+    } catch {}
+  }, []);
+
+  const handleToggleTradeMode = async (targetMode) => {
+    const nextMode = targetMode || (tradeMode.mode === "live" ? "paper" : "live");
+    const confirmMsg =
+      nextMode === "live"
+        ? "⚠️ [실거래 모드]로 전환하시겠습니까?\n실제 업비트 계좌의 자금으로 실제 매수/매도 주문이 전송됩니다."
+        : "🧪 [가상거래(모의투자) 모드]로 전환하시겠습니까?\n실제 코인 시세와 호가를 바탕으로 모의 체결이 이루어지며, 실제 계좌 잔고는 소진되지 않습니다.";
+    if (!window.confirm(confirmMsg)) return;
+
+    setTradeMode((prev) => ({ ...prev, loading: true }));
+    try {
+      const resp = await fetch(`${API_BASE}/api/trade-mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: nextMode }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        setTradeMode((prev) => ({
+          ...prev,
+          mode: data.mode,
+          is_live: data.mode === "live" && prev.has_keys,
+          loading: false,
+          message: data.message,
+        }));
+        showModal(
+          data.mode === "live" ? "⚡ 실거래 모드 전환 완료" : "🧪 가상거래 모드 전환 완료",
+          data.message,
+          data.mode === "live" ? "warning" : "info"
+        );
+        fetchOverviewAndBots(false);
+      } else {
+        alert(data.message || "모드 변경에 실패했습니다.");
+        setTradeMode((prev) => ({ ...prev, loading: false }));
+      }
+    } catch (err) {
+      alert("모드 변경 중 통신 오류가 발생했습니다: " + err.message);
+      setTradeMode((prev) => ({ ...prev, loading: false }));
+    }
+  };
+
+  // 11) 알고리즘 검증소 (Algorithm Validation Lab) 상태
+  const [algoModels, setAlgoModels] = useState([]);
+  const [algoTrades, setAlgoTrades] = useState([]);
+  const [selectedAlgoModelId, setSelectedAlgoModelId] = useState("all");
+  const [algoLabLoading, setAlgoLabLoading] = useState(false);
+  const [algoLabCycleRunning, setAlgoLabCycleRunning] = useState(false);
+  const [algoLabLastUpdated, setAlgoLabLastUpdated] = useState("");
+
+  const fetchAlgoLabModels = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/algo-lab/models`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.success && Array.isArray(data.models)) {
+        setAlgoModels(data.models);
+        setAlgoLabLastUpdated(data.updated_at || "");
+      }
+    } catch {}
+  }, []);
+
+  const fetchAlgoLabTrades = useCallback(async (modelId = null) => {
+    try {
+      const targetId = modelId !== undefined && modelId !== null ? modelId : selectedAlgoModelId;
+      const url =
+        targetId && targetId !== "all"
+          ? `${API_BASE}/api/algo-lab/trades?model_id=${encodeURIComponent(targetId)}&limit=50`
+          : `${API_BASE}/api/algo-lab/trades?limit=50`;
+      const resp = await fetch(url);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.success && Array.isArray(data.trades)) {
+        setAlgoTrades(data.trades);
+      }
+    } catch {}
+  }, [selectedAlgoModelId]);
+
+  const handleResetAlgoLab = async () => {
+    if (!window.confirm("알고리즘 검증소의 모든 모델 자본을 1,000,000원으로 초기화하고 가상 거래 기록을 리셋하시겠습니까?")) {
+      return;
+    }
+    setAlgoLabLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE}/api/algo-lab/reset`, { method: "POST" });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        setAlgoModels(data.models || []);
+        fetchAlgoLabTrades(selectedAlgoModelId);
+        showModal("알고리즘 검증소 초기화", data.message, "info");
+      }
+    } catch (err) {
+      alert("검증소 초기화 실패: " + err.message);
+    } finally {
+      setAlgoLabLoading(false);
+    }
+  };
+
+  const handleRunAlgoLabCycle = async () => {
+    setAlgoLabCycleRunning(true);
+    try {
+      const resp = await fetch(`${API_BASE}/api/algo-lab/run-cycle`, { method: "POST" });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        setAlgoModels(data.models || []);
+        fetchAlgoLabTrades(selectedAlgoModelId);
+      }
+    } catch (err) {
+      console.warn("Run cycle error:", err);
+    } finally {
+      setAlgoLabCycleRunning(false);
+    }
+  };
+
   const fetchAiBriefing = async () => {
     try {
       const resp = await fetch(`${API_BASE}/api/ai/briefing`);
@@ -930,15 +1066,31 @@ export default function App() {
     fetchTrades(selectedBotId);
     fetchStatistics();
     fetchAiBriefing();
+    fetchTradeMode();
+    fetchAlgoLabModels();
 
     const timer = setInterval(() => {
       fetchUpbitStatus();
       fetchUpbitAccount();
       refreshBotsStatusOnly();
       fetchTrades(selectedBotId);
+      fetchTradeMode();
     }, 6000);
     return () => clearInterval(timer);
-  }, [authenticated, selectedBotId]);
+  }, [authenticated, selectedBotId, fetchTradeMode, fetchAlgoLabModels]);
+
+  // 알고리즘 검증소 활성화 시 5초 주기 실시간 모델 랭킹 및 체결 일지 자동 갱신
+  useEffect(() => {
+    if (!authenticated || activeMenu !== "algo-lab") return;
+    fetchAlgoLabModels();
+    fetchAlgoLabTrades(selectedAlgoModelId);
+
+    const timer = setInterval(() => {
+      fetchAlgoLabModels();
+      fetchAlgoLabTrades(selectedAlgoModelId);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [authenticated, activeMenu, selectedAlgoModelId, fetchAlgoLabModels, fetchAlgoLabTrades]);
 
   useEffect(() => {
     sessionStorage.setItem("autoCoinTrade_menu", activeMenu);
@@ -1139,14 +1291,19 @@ export default function App() {
       fetchOverviewAndBots(true);
       fetchUpbitAccount();
       fetchTrades(selectedBotId);
+      fetchTradeMode();
     } else if (menuKey === "stats") {
       fetchStatistics();
+    } else if (menuKey === "algo-lab") {
+      fetchAlgoLabModels();
+      fetchAlgoLabTrades(selectedAlgoModelId);
     } else if (menuKey === "news") {
       fetchNews(1);
       fetchNewsAiBriefing();
     } else if (menuKey === "settings") {
       fetchOverviewAndBots(false);
       fetchUpbitAccount();
+      fetchTradeMode();
     }
   };
 
@@ -1446,9 +1603,26 @@ export default function App() {
               <div>• 최근확인: {upbitStatus.checked_at || "-"}</div>
             </div>
           </div>
+
+          {/* 실시간 거래 모드 전환 버튼 (가상거래 모의투자 ↔ 실거래) */}
+          <div className="trade-mode-chip-container">
+            <button
+              type="button"
+              className={`mode-toggle-chip ${tradeMode.mode === "paper" ? "chip-paper" : "chip-live"}`}
+              onClick={() => handleToggleTradeMode()}
+              disabled={tradeMode.loading}
+              title="클릭하여 실거래 / 가상거래(모의투자) 모드를 전환합니다."
+            >
+              <span className={`mode-dot ${tradeMode.mode === "paper" ? "paper" : "live"}`} />
+              <span className="mode-text">
+                {tradeMode.mode === "paper" ? "🧪 가상거래(모의)" : "⚡ 업비트 실거래"}
+              </span>
+              <span className="mode-switch-hint">전환 ⇄</span>
+            </button>
+          </div>
         </div>
 
-        {/* 요구사항 8: 메뉴 구성 (거래현황, 통계, 설정) */}
+        {/* 메뉴 구성 (거래현황, 통계, 알고리즘 검증소, 뉴스, 설정) */}
         <nav className="menu-list">
           <button
             className={`menu-btn ${activeMenu === "trades" ? "active" : ""}`}
@@ -1463,6 +1637,13 @@ export default function App() {
           >
             <span>📈</span>
             <span>통계</span>
+          </button>
+          <button
+            className={`menu-btn ${activeMenu === "algo-lab" ? "active" : ""}`}
+            onClick={() => handleMenuChange("algo-lab")}
+          >
+            <span>🧪</span>
+            <span>검증소</span>
           </button>
           <button
             className={`menu-btn ${activeMenu === "news" ? "active" : ""}`}
@@ -1481,6 +1662,20 @@ export default function App() {
         </nav>
 
         <div className="sidebar-footer">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+            <span>모드:</span>
+            <span
+              style={{
+                fontWeight: 700,
+                color: tradeMode.mode === "paper" ? "#a5b4fc" : "#ef4444",
+                cursor: "pointer",
+              }}
+              onClick={() => handleToggleTradeMode()}
+              title="클릭하여 모드 전환"
+            >
+              {tradeMode.mode === "paper" ? "🧪 가상거래(모의)" : "⚡ 업비트 실거래"}
+            </span>
+          </div>
           <div>DB: SQLite (WAL / 자동 재접속)</div>
           <div style={{ marginTop: "4px" }}>Rate Limit: 0.12s 방어 적용</div>
         </div>
@@ -1500,6 +1695,63 @@ export default function App() {
                   봇별 탭으로 거래 내역을 확인하고 수동으로 거래 시작 및 중단을 제어합니다.
                 </p>
               </div>
+            </div>
+
+            {/* 가상거래 / 실거래 모드 상태 안내 카드 */}
+            <div
+              className="card"
+              style={{
+                marginBottom: "16px",
+                padding: "12px 18px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "10px",
+                background:
+                  tradeMode.mode === "paper"
+                    ? "linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(30, 27, 75, 0.35) 100%)"
+                    : "linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(69, 10, 10, 0.25) 100%)",
+                borderColor: tradeMode.mode === "paper" ? "rgba(99, 102, 241, 0.45)" : "rgba(239, 68, 68, 0.45)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <span style={{ fontSize: "22px" }}>{tradeMode.mode === "paper" ? "🧪" : "⚡"}</span>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <strong style={{ fontSize: "15px", color: tradeMode.mode === "paper" ? "#c7d2fe" : "#fca5a5" }}>
+                      {tradeMode.mode === "paper" ? "현재 [가상거래 모의투자] 모드 동작 중" : "현재 [업비트 실거래] 모드 동작 중"}
+                    </strong>
+                    <span
+                      style={{
+                        fontSize: "11px",
+                        padding: "2px 8px",
+                        borderRadius: "10px",
+                        fontWeight: 700,
+                        background: tradeMode.mode === "paper" ? "#4338ca" : "#b91c1c",
+                        color: "#ffffff",
+                      }}
+                    >
+                      {tradeMode.mode === "paper" ? "PAPER" : "LIVE"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "3px" }}>
+                    {tradeMode.mode === "paper"
+                      ? "실제 코인 실시간 지표(호가/캔들)를 사용하여 매수/매도 조건을 평가하고, 가상 원장으로 안전하게 모의 체결합니다."
+                      : "업비트 실계좌 API 키를 통해 실제 원화 잔고로 매수/매도 주문이 거래소에 직접 전송됩니다."}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className={`btn ${tradeMode.mode === "paper" ? "btn-primary" : "btn-stop"}`}
+                onClick={() => handleToggleTradeMode()}
+                disabled={tradeMode.loading}
+                style={{ padding: "8px 16px", fontSize: "12.5px" }}
+              >
+                {tradeMode.loading ? "모드 전환 중..." : tradeMode.mode === "paper" ? "⚡ 실거래 모드로 전환" : "🧪 가상거래 모드로 전환"}
+              </button>
             </div>
 
             {/* 거래현황 상단: 업비트 실계좌 조회 요약 (총 매수금액 / 총 평가금액 / 주문 가능 금액) */}
@@ -2292,6 +2544,409 @@ export default function App() {
         )}
 
         {/* ============================================================
+            [메뉴 3] 알고리즘 검증소 (Algorithm Validation Lab / Testbed)
+            - 실제 업비트 실시간 호가/시세 기반 6개 퀀트 전략 모델 실시간 경쟁 및 랭킹
+            - 1위~3위 포디움 하이라이트
+            - 실시간 수익률 및 총 평가자산 랭킹 테이블
+            - 모델별 가상 체결 및 상세 매매 일지
+           ============================================================ */}
+        {activeMenu === "algo-lab" && (
+          <div>
+            <div className="page-header">
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <h2 className="page-title">알고리즘 검증소 (Algorithm Lab)</h2>
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      padding: "3px 10px",
+                      borderRadius: "12px",
+                      background: "rgba(99, 102, 241, 0.2)",
+                      color: "#a5b4fc",
+                      border: "1px solid rgba(99, 102, 241, 0.4)",
+                      fontWeight: 700,
+                    }}
+                  >
+                    ⚡ 실시간 가상 검증 랭킹
+                  </span>
+                </div>
+                <p className="page-desc">
+                  실제 업비트 실시간 호가 및 캔들 데이터를 바탕으로 6개 퀀트 전략 모델이 가상 자본으로 매매 경쟁을 펼치며, 실시간 수익률 랭킹을 산출합니다.
+                </p>
+              </div>
+
+              {/* 검증소 우측 액션 버튼들 */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
+                <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                  최근 갱신: {algoLabLastUpdated || "-"} (10초 자동)
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleRunAlgoLabCycle}
+                  disabled={algoLabCycleRunning}
+                  style={{ padding: "8px 14px", fontSize: "12.5px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                >
+                  <span>{algoLabCycleRunning ? "⏳" : "🔄"}</span>
+                  <span>{algoLabCycleRunning ? "시뮬레이션 중..." : "실시간 검증 실행"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={handleResetAlgoLab}
+                  disabled={algoLabLoading}
+                  style={{ padding: "8px 14px", fontSize: "12.5px" }}
+                >
+                  초기화 (100만원 리셋)
+                </button>
+              </div>
+            </div>
+
+            {/* TOP 3 랭킹 포디움 (Gold 🥇 / Silver 🥈 / Bronze 🥉) */}
+            <div className="podium-grid">
+              {algoModels.slice(0, 3).map((m, idx) => {
+                const rankNum = idx + 1;
+                const isFirst = rankNum === 1;
+                const badgeClass = isFirst ? "gold" : rankNum === 2 ? "silver" : "bronze";
+                const medalIcon = isFirst ? "🥇 1위 (챔피언)" : rankNum === 2 ? "🥈 2위" : "🥉 3위";
+                const profitRate = Number(m.profit_rate_pct || 0);
+
+                return (
+                  <div key={m.model_id} className={`podium-card ${badgeClass}`}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                      <span className={`podium-badge ${badgeClass}`}>{medalIcon}</span>
+                      <span style={{ fontSize: "11px", color: "#94a3b8", background: "rgba(0,0,0,0.3)", padding: "2px 6px", borderRadius: "4px" }}>
+                        {m.category}
+                      </span>
+                    </div>
+
+                    <div style={{ fontSize: "16px", fontWeight: 800, color: "#f8fafc", marginBottom: "6px" }}>
+                      {m.name}
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "8px", marginBottom: "12px" }}>
+                      <span
+                        style={{
+                          fontSize: "22px",
+                          fontWeight: 800,
+                          color: profitRate > 0 ? "var(--profit-red)" : profitRate < 0 ? "var(--loss-blue)" : "#94a3b8",
+                        }}
+                      >
+                        {profitRate > 0 ? "+" : ""}{profitRate.toFixed(2)}%
+                      </span>
+                      <span style={{ fontSize: "13px", color: "#cbd5e1" }}>
+                        ({Number(m.cumulative_profit_krw || 0) > 0 ? "+" : ""}
+                        {Math.floor(Number(m.cumulative_profit_krw || 0)).toLocaleString("ko-KR")}원)
+                      </span>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", fontSize: "12px", background: "rgba(0,0,0,0.25)", padding: "8px 10px", borderRadius: "8px" }}>
+                      <div>
+                        <span style={{ color: "#94a3b8" }}>총 평가자산: </span>
+                        <strong style={{ color: "#f1f5f9" }}>{Math.floor(Number(m.eval_assets_krw || 0)).toLocaleString("ko-KR")}원</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "#94a3b8" }}>승률: </span>
+                        <strong style={{ color: Number(m.win_rate_pct || 0) >= 50 ? "#4ade80" : "#f87171" }}>
+                          {m.win_rate_pct}% ({m.win_trades}승 {m.lose_trades}패)
+                        </strong>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: "10px", fontSize: "11.5px", color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      💡 {m.last_signal_text}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 실시간 알고리즘 랭킹 테이블 카드 */}
+            <div className="card" style={{ marginBottom: "20px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "8px" }}>
+                <h3 style={{ fontSize: "16px", fontWeight: 700 }}>
+                  실시간 알고리즘 수익률 랭킹 보드 (전체 6개 모델)
+                </h3>
+                <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                  * 실제 업비트 실시간 호가/시세로 10초마다 자동 평가 및 순위가 갱신됩니다.
+                </div>
+              </div>
+
+              <div className="table-container">
+                <table className="board-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "65px", textAlign: "center" }}>순위</th>
+                      <th>알고리즘 모델명</th>
+                      <th style={{ width: "95px" }}>전략 분류</th>
+                      <th style={{ textAlign: "right", width: "130px" }}>실시간 수익률</th>
+                      <th style={{ textAlign: "right", width: "120px" }}>총 평가자산</th>
+                      <th style={{ textAlign: "right", width: "110px" }}>가용 현금</th>
+                      <th style={{ textAlign: "center", width: "120px" }}>승률 (전적)</th>
+                      <th style={{ width: "150px" }}>보유 포지션</th>
+                      <th style={{ width: "100px", textAlign: "center" }}>상세 검증</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {algoModels.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} style={{ textAlign: "center", padding: "32px", color: "var(--text-secondary)" }}>
+                          알고리즘 모델 데이터를 불러오는 중입니다...
+                        </td>
+                      </tr>
+                    ) : (
+                      algoModels.map((m) => {
+                        const profitRate = Number(m.profit_rate_pct || 0);
+                        const cumProfit = Number(m.cumulative_profit_krw || 0);
+                        const isRank1 = m.current_rank === 1;
+                        const isRank2 = m.current_rank === 2;
+                        const isRank3 = m.current_rank === 3;
+
+                        return (
+                          <tr
+                            key={m.model_id}
+                            style={{
+                              background: isRank1 ? "rgba(234, 179, 8, 0.08)" : undefined,
+                              cursor: "pointer",
+                            }}
+                            onClick={() => {
+                              setSelectedAlgoModelId(m.model_id);
+                              fetchAlgoLabTrades(m.model_id);
+                            }}
+                          >
+                            <td style={{ textAlign: "center", fontWeight: 800, fontSize: "15px" }}>
+                              {isRank1 ? "🥇 1위" : isRank2 ? "🥈 2위" : isRank3 ? "🥉 3위" : `${m.current_rank}위`}
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 700, color: "#f8fafc" }}>{m.name}</div>
+                              <div style={{ fontSize: "11.5px", color: "#94a3b8", marginTop: "2px" }}>
+                                {m.last_signal_text}
+                              </div>
+                            </td>
+                            <td>
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  padding: "2px 8px",
+                                  borderRadius: "10px",
+                                  background: "rgba(99, 102, 241, 0.15)",
+                                  color: "#a5b4fc",
+                                  border: "1px solid rgba(99, 102, 241, 0.3)",
+                                }}
+                              >
+                                {m.category}
+                              </span>
+                            </td>
+                            <td style={{ textAlign: "right" }}>
+                              <div
+                                style={{
+                                  fontWeight: 800,
+                                  fontSize: "14.5px",
+                                  color: profitRate > 0 ? "var(--profit-red)" : profitRate < 0 ? "var(--loss-blue)" : "#94a3b8",
+                                }}
+                              >
+                                {profitRate > 0 ? "+" : ""}{profitRate.toFixed(2)}%
+                              </div>
+                              <div style={{ fontSize: "11.5px", color: "#94a3b8" }}>
+                                ({cumProfit > 0 ? "+" : ""}{cumProfit.toLocaleString("ko-KR")}원)
+                              </div>
+                            </td>
+                            <td style={{ textAlign: "right", fontWeight: 700, color: "#f1f5f9" }}>
+                              {Math.floor(Number(m.eval_assets_krw || 0)).toLocaleString("ko-KR")}원
+                            </td>
+                            <td style={{ textAlign: "right", color: "#cbd5e1" }}>
+                              {Math.floor(Number(m.cash_krw || 0)).toLocaleString("ko-KR")}원
+                            </td>
+                            <td style={{ textAlign: "center" }}>
+                              <span
+                                style={{
+                                  fontWeight: 700,
+                                  color: Number(m.win_rate_pct || 0) >= 50 ? "#4ade80" : "#f87171",
+                                }}
+                              >
+                                {m.win_rate_pct}%
+                              </span>
+                              <div style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                ({m.win_trades}승 {m.lose_trades}패 / {m.total_trades}회)
+                              </div>
+                            </td>
+                            <td>
+                              {(m.open_positions || []).length === 0 ? (
+                                <span style={{ fontSize: "12px", color: "#64748b" }}>보유 없음 (현금 100%)</span>
+                              ) : (
+                                (m.open_positions || []).map((p) => (
+                                  <div
+                                    key={p.id}
+                                    style={{
+                                      fontSize: "11.5px",
+                                      background: "rgba(30, 41, 59, 0.8)",
+                                      border: "1px solid #334155",
+                                      borderRadius: "6px",
+                                      padding: "2px 6px",
+                                      marginBottom: "3px",
+                                    }}
+                                  >
+                                    <strong style={{ color: "#38bdf8" }}>{p.market}</strong>{" "}
+                                    <span style={{ color: "#94a3b8" }}>
+                                      {Number(p.avg_buy_price).toLocaleString()}원
+                                    </span>
+                                  </div>
+                                ))
+                              )}
+                            </td>
+                            <td style={{ textAlign: "center" }}>
+                              <button
+                                type="button"
+                                className="btn btn-outline"
+                                style={{ padding: "4px 10px", fontSize: "11.5px" }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedAlgoModelId(m.model_id);
+                                  fetchAlgoLabTrades(m.model_id);
+                                }}
+                              >
+                                상세
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 모델별 가상 매매 체결 이력 카드 */}
+            <div className="card">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "8px" }}>
+                <div>
+                  <h3 style={{ fontSize: "16px", fontWeight: 700 }}>
+                    가상 매매 체결 일지 (
+                    {selectedAlgoModelId === "all"
+                      ? "전체 모델"
+                      : algoModels.find((m) => m.model_id === selectedAlgoModelId)?.name || selectedAlgoModelId}
+                    )
+                  </h3>
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                    실제 실시간 시세와 호가 지표를 기반으로 가상 매수/매도 및 수수료(0.05%)가 정밀 차감 체결된 내역입니다.
+                  </p>
+                </div>
+
+                {/* 모델 필터 탭 */}
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className={`tab-btn ${selectedAlgoModelId === "all" ? "active" : ""}`}
+                    style={{ padding: "6px 12px", fontSize: "12px" }}
+                    onClick={() => {
+                      setSelectedAlgoModelId("all");
+                      fetchAlgoLabTrades("all");
+                    }}
+                  >
+                    전체 이력
+                  </button>
+                  {algoModels.map((m) => (
+                    <button
+                      key={m.model_id}
+                      type="button"
+                      className={`tab-btn ${selectedAlgoModelId === m.model_id ? "active" : ""}`}
+                      style={{ padding: "6px 10px", fontSize: "12px" }}
+                      onClick={() => {
+                        setSelectedAlgoModelId(m.model_id);
+                        fetchAlgoLabTrades(m.model_id);
+                      }}
+                    >
+                      {m.current_rank}위 {m.name.split(" ")[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 체결 내역 테이블 */}
+              <div className="table-container">
+                <table className="board-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "55px", textAlign: "center" }}>No</th>
+                      <th>알고리즘 모델</th>
+                      <th>코인(마켓)</th>
+                      <th>가상 매수가 (매수금액)</th>
+                      <th>매수 일시</th>
+                      <th>가상 매도가 (매도금액)</th>
+                      <th>매도 일시</th>
+                      <th style={{ textAlign: "right" }}>실현 손익</th>
+                      <th style={{ textAlign: "right" }}>수익률</th>
+                      <th>청산 사유 / 상태</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {algoTrades.length === 0 ? (
+                      <tr>
+                        <td colSpan={10} style={{ textAlign: "center", padding: "28px", color: "#94a3b8" }}>
+                          아직 기록된 가상 체결 내역이 없습니다. 실시간 시뮬레이션이 진행되면 자동으로 기록됩니다.
+                        </td>
+                      </tr>
+                    ) : (
+                      algoTrades.map((t, idx) => (
+                        <tr key={t.id || idx}>
+                          <td style={{ textAlign: "center", color: "#94a3b8" }}>{t.id || idx + 1}</td>
+                          <td style={{ fontWeight: 600, color: "#f8fafc" }}>
+                            {t.model_name || algoModels.find((m) => m.model_id === t.model_id)?.name || t.model_id}
+                          </td>
+                          <td style={{ fontWeight: 700, color: "#38bdf8" }}>{t.market}</td>
+                          <td>
+                            {Number(t.buy_price || 0).toLocaleString("ko-KR")}원{" "}
+                            <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                              ({Math.floor(Number(t.buy_amount || 0)).toLocaleString("ko-KR")}원)
+                            </span>
+                          </td>
+                          <td style={{ fontSize: "12px", color: "#cbd5e1" }}>{t.buy_date}</td>
+                          <td>
+                            {t.sell_price !== null && t.sell_price !== undefined
+                              ? `${Number(t.sell_price).toLocaleString("ko-KR")}원 (${Math.floor(Number(t.sell_amount || 0)).toLocaleString("ko-KR")}원)`
+                              : <span style={{ color: "#eab308" }}>● 보유 중 (미매도)</span>}
+                          </td>
+                          <td style={{ fontSize: "12px", color: "#cbd5e1" }}>{t.sell_date || "-"}</td>
+                          <td style={{ textAlign: "right", fontWeight: 700 }}>
+                            {t.profit_krw !== null && t.profit_krw !== undefined
+                              ? renderColoredProfit(t.profit_krw)
+                              : "-"}
+                          </td>
+                          <td style={{ textAlign: "right", fontWeight: 700 }}>
+                            {t.profit_pct !== null && t.profit_pct !== undefined ? (
+                              <span
+                                style={{
+                                  color: Number(t.profit_pct) > 0 ? "var(--profit-red)" : Number(t.profit_pct) < 0 ? "var(--loss-blue)" : "#94a3b8",
+                                }}
+                              >
+                                {Number(t.profit_pct) > 0 ? "+" : ""}{Number(t.profit_pct).toFixed(2)}%
+                              </span>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
+                          <td>
+                            <span
+                              style={{
+                                fontSize: "12px",
+                                color: t.status === "HOLDING" ? "#eab308" : "#94a3b8",
+                              }}
+                            >
+                              {t.reason || (t.status === "HOLDING" ? "포지션 유지 중" : "매도 완료")}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================
             [메뉴] 실시간 뉴스 피드 & LLM 감성 분석 (50건 페이지네이션, 날짜/키워드 검색, AI 뉴스 판단)
            ============================================================ */}
         {activeMenu === "news" && (
@@ -2787,8 +3442,69 @@ export default function App() {
               <div>
                 <h2 className="page-title">설정</h2>
                 <p className="page-desc">
-                  봇별 자금 분배 비율(소수점 버림), 봇 별명 및 전략 파라미터 수정, JSON 데이터 마이그레이션 및 복원을 관리합니다.
+                  거래 실행 모드(가상거래/실거래), 봇별 자금 분배 비율, 봇 별명 및 전략 파라미터 수정, 데이터 마이그레이션을 관리합니다.
                 </p>
+              </div>
+            </div>
+
+            {/* 거래 실행 모드 설정 (가상거래 모의투자 ↔ 업비트 실거래) */}
+            <div
+              className="card"
+              style={{
+                background: tradeMode.mode === "paper" ? "linear-gradient(135deg, rgba(30, 27, 75, 0.7), rgba(15, 23, 42, 0.9))" : "linear-gradient(135deg, rgba(69, 10, 10, 0.7), rgba(15, 23, 42, 0.9))",
+                border: tradeMode.mode === "paper" ? "1px solid rgba(99, 102, 241, 0.5)" : "1px solid rgba(239, 68, 68, 0.5)",
+                marginBottom: "20px",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "12px",
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+                    <h3 style={{ fontSize: "16px", fontWeight: 700, margin: 0, color: "#f8fafc" }}>
+                      ⚡ 거래 실행 모드 설정
+                    </h3>
+                    <span
+                      style={{
+                        padding: "3px 8px",
+                        borderRadius: "12px",
+                        fontSize: "12px",
+                        fontWeight: 700,
+                        background: tradeMode.mode === "paper" ? "rgba(99, 102, 241, 0.25)" : "rgba(239, 68, 68, 0.25)",
+                        color: tradeMode.mode === "paper" ? "#a5b4fc" : "#fca5a5",
+                        border: tradeMode.mode === "paper" ? "1px solid #6366f1" : "1px solid #ef4444",
+                      }}
+                    >
+                      {tradeMode.mode === "paper" ? "🧪 가상거래(모의투자) 모드 동작 중" : "⚡ 업비트 실거래 모드 동작 중"}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: "12.5px", color: "#cbd5e1", lineHeight: 1.5 }}>
+                    {tradeMode.mode === "paper"
+                      ? "현재 모드는 가상거래(모의투자)입니다. 실제 업비트 실시간 호가/시세 및 기술지표를 그대로 사용하여 매수/매도 신호를 포착하지만, 업비트 주문 API를 호출하지 않고 가상 체결(수수료 0.05% 반영)로 안전하게 거래를 시뮬레이션합니다."
+                      : "현재 모드는 실제 업비트 계좌 실거래입니다! 봇의 매수/매도 주문이 실제 업비트 거래소 API를 통해 실제 원화/코인으로 즉시 체결됩니다. 주의하여 운용하십시오."}
+                  </p>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className={`btn ${tradeMode.mode === "paper" ? "btn-stop" : "btn-primary"}`}
+                    onClick={() => handleToggleTradeMode(tradeMode.mode === "paper" ? "live" : "paper")}
+                    disabled={tradeMode.loading}
+                    style={{
+                      padding: "8px 16px",
+                      fontSize: "13px",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {tradeMode.loading ? "모드 전환 중..." : tradeMode.mode === "paper" ? "⚡ 업비트 실거래로 전환" : "🧪 가상거래(모의투자)로 전환"}
+                  </button>
+                </div>
               </div>
             </div>
 

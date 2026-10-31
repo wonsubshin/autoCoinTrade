@@ -221,6 +221,148 @@ export class PgSyncManager {
           );
         }
       } catch {}
+
+      // 6. algo_lab_models, algo_lab_positions, algo_lab_trades
+      try {
+        await this.pool.query(`
+          CREATE TABLE IF NOT EXISTS algo_lab_models (
+            model_id VARCHAR(64) PRIMARY KEY,
+            name VARCHAR(128) NOT NULL,
+            category VARCHAR(64) NOT NULL,
+            description TEXT NOT NULL,
+            initial_capital BIGINT NOT NULL DEFAULT 1000000,
+            cash_krw BIGINT NOT NULL DEFAULT 1000000,
+            eval_assets_krw BIGINT NOT NULL DEFAULT 1000000,
+            cumulative_profit_krw BIGINT NOT NULL DEFAULT 0,
+            profit_rate_pct NUMERIC(8,2) NOT NULL DEFAULT 0.0,
+            win_trades INT NOT NULL DEFAULT 0,
+            lose_trades INT NOT NULL DEFAULT 0,
+            total_trades INT NOT NULL DEFAULT 0,
+            win_rate_pct NUMERIC(6,2) NOT NULL DEFAULT 0.0,
+            current_rank INT NOT NULL DEFAULT 1,
+            is_active INT NOT NULL DEFAULT 1,
+            last_signal_text TEXT NOT NULL DEFAULT '',
+            config_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+          );
+
+          CREATE TABLE IF NOT EXISTS algo_lab_positions (
+            id SERIAL PRIMARY KEY,
+            model_id VARCHAR(64) NOT NULL,
+            market VARCHAR(32) NOT NULL,
+            volume VARCHAR(32) NOT NULL,
+            avg_buy_price NUMERIC(16,4) NOT NULL,
+            buy_amount BIGINT NOT NULL,
+            buy_fee NUMERIC(16,4) NOT NULL DEFAULT 0,
+            status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            closed_at TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS algo_lab_trades (
+            id SERIAL PRIMARY KEY,
+            model_id VARCHAR(64) NOT NULL,
+            market VARCHAR(32) NOT NULL,
+            buy_price NUMERIC(16,4) NOT NULL,
+            buy_volume VARCHAR(32) NOT NULL,
+            buy_amount BIGINT NOT NULL,
+            buy_date TIMESTAMP NOT NULL,
+            sell_price NUMERIC(16,4),
+            sell_volume VARCHAR(32),
+            sell_amount BIGINT,
+            sell_date TIMESTAMP,
+            profit_krw BIGINT,
+            profit_pct NUMERIC(8,2),
+            reason TEXT,
+            status VARCHAR(16) NOT NULL DEFAULT 'HOLDING'
+          );
+        `);
+
+        const models = sqliteDb.prepare("SELECT * FROM algo_lab_models").all();
+        for (const m of models) {
+          await this.pool.query(
+            `INSERT INTO algo_lab_models (
+               model_id, name, category, description,
+               initial_capital, cash_krw, eval_assets_krw,
+               cumulative_profit_krw, profit_rate_pct,
+               win_trades, lose_trades, total_trades, win_rate_pct,
+               current_rank, is_active, last_signal_text, config_json, updated_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+             ON CONFLICT (model_id) DO UPDATE SET
+               cash_krw = EXCLUDED.cash_krw,
+               eval_assets_krw = EXCLUDED.eval_assets_krw,
+               cumulative_profit_krw = EXCLUDED.cumulative_profit_krw,
+               profit_rate_pct = EXCLUDED.profit_rate_pct,
+               win_trades = EXCLUDED.win_trades,
+               lose_trades = EXCLUDED.lose_trades,
+               total_trades = EXCLUDED.total_trades,
+               win_rate_pct = EXCLUDED.win_rate_pct,
+               current_rank = EXCLUDED.current_rank,
+               last_signal_text = EXCLUDED.last_signal_text,
+               updated_at = EXCLUDED.updated_at`,
+            [
+              m.model_id, m.name, m.category, m.description || "",
+              Math.floor(Number(m.initial_capital || 1000000)), Math.floor(Number(m.cash_krw || 1000000)),
+              Math.floor(Number(m.eval_assets_krw || 1000000)), Math.floor(Number(m.cumulative_profit_krw || 0)),
+              Number(m.profit_rate_pct || 0), Number(m.win_trades || 0),
+              Number(m.lose_trades || 0), Number(m.total_trades || 0),
+              Number(m.win_rate_pct || 0), Number(m.current_rank || 1),
+              Number(m.is_active || 1), m.last_signal_text || "",
+              m.config_json || "{}", m.updated_at
+            ]
+          );
+        }
+
+        const positions = sqliteDb.prepare("SELECT * FROM algo_lab_positions").all();
+        for (const p of positions) {
+          await this.pool.query(
+            `INSERT INTO algo_lab_positions (
+               id, model_id, market, volume, avg_buy_price, buy_amount, buy_fee, status, created_at, closed_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (id) DO UPDATE SET
+               volume = EXCLUDED.volume,
+               avg_buy_price = EXCLUDED.avg_buy_price,
+               buy_amount = EXCLUDED.buy_amount,
+               status = EXCLUDED.status,
+               closed_at = EXCLUDED.closed_at`,
+            [
+              p.id, p.model_id, p.market, String(p.volume),
+              Number(p.avg_buy_price || 0), Math.floor(Number(p.buy_amount || 0)),
+              Number(p.buy_fee || 0), p.status || "OPEN",
+              p.created_at, p.closed_at
+            ]
+          );
+        }
+
+        const trades = sqliteDb.prepare("SELECT * FROM algo_lab_trades ORDER BY id DESC LIMIT 200").all();
+        for (const t of trades) {
+          await this.pool.query(
+            `INSERT INTO algo_lab_trades (
+               id, model_id, market, buy_price, buy_volume, buy_amount, buy_date,
+               sell_price, sell_volume, sell_amount, sell_date, profit_krw, profit_pct, reason, status
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             ON CONFLICT (id) DO UPDATE SET
+               sell_price = EXCLUDED.sell_price,
+               sell_volume = EXCLUDED.sell_volume,
+               sell_amount = EXCLUDED.sell_amount,
+               sell_date = EXCLUDED.sell_date,
+               profit_krw = EXCLUDED.profit_krw,
+               profit_pct = EXCLUDED.profit_pct,
+               reason = EXCLUDED.reason,
+               status = EXCLUDED.status`,
+            [
+              t.id, t.model_id, t.market, Number(t.buy_price || 0),
+              String(t.buy_volume || "0"), Math.floor(Number(t.buy_amount || 0)),
+              t.buy_date, t.sell_price ? Number(t.sell_price) : null,
+              t.sell_volume ? String(t.sell_volume) : null,
+              t.sell_amount ? Math.floor(Number(t.sell_amount)) : null,
+              t.sell_date, t.profit_krw ? Math.floor(Number(t.profit_krw)) : null,
+              t.profit_pct ? Number(t.profit_pct) : null,
+              t.reason || "", t.status || "HOLDING"
+            ]
+          );
+        }
+      } catch {}
     } catch (err) {
       console.warn(`[PgSync] Sync error: ${err.message}`);
     }

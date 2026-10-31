@@ -6,6 +6,13 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { pgSyncManager } from "./common/pg_sync.mjs";
 import { syncNewsToDatabase, queryNewsList } from "./common/news_service.mjs";
+import {
+  initAlgoLabTables,
+  runAlgoLabCycle,
+  getAlgoLabModels,
+  getAlgoLabTrades,
+  resetAlgoLab,
+} from "./common/algo_lab_service.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -154,6 +161,9 @@ function initializeDatabase() {
       created_at TEXT NOT NULL
     );
   `);
+
+  // 알고리즘 검증소(Algorithm Lab) 테이블 및 모델 초기화
+  initAlgoLabTables(db);
 
   // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-* / auto-bid-*) 가상 이력 제거
   db.exec("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%' OR order_uuid LIKE 'order-bid-%' OR order_uuid LIKE 'auto-bid-%';");
@@ -2146,6 +2156,100 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // ============================================================
+    // [가상거래 모드 (Paper Trading) API]
+    // ============================================================
+    if (pathname === "/api/trade-mode" && req.method === "GET") {
+      const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+      let cfg = {};
+      try {
+        cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+      } catch {}
+      const mode = String(cfg.trade_mode || "paper").toLowerCase();
+      const hasKeys = !!(
+        cfg.access_key &&
+        cfg.secret_key &&
+        cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY" &&
+        String(cfg.access_key).trim() !== ""
+      );
+      return sendJson(res, 200, {
+        mode,
+        is_live: mode === "live" && hasKeys,
+        has_keys: hasKeys,
+        message: mode === "live" ? "실거래(Live) 모드 운용 중" : "가상거래(Paper) 모의투자 모드 운용 중",
+      });
+    }
+
+    if (pathname === "/api/trade-mode" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const targetMode = String(body.mode || "").toLowerCase() === "live" ? "live" : "paper";
+      const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+      let cfg = {};
+      try {
+        cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+      } catch {}
+      cfg.trade_mode = targetMode;
+      try {
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf-8");
+      } catch (err) {
+        return sendJson(res, 500, { success: false, message: `설정 파일 저장 실패: ${err.message}` });
+      }
+      db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('trade_mode', ?, ?)").run(
+        targetMode,
+        nowKSTString()
+      );
+      return sendJson(res, 200, {
+        success: true,
+        mode: targetMode,
+        message:
+          targetMode === "live"
+            ? "실거래(Live) 모드로 전환되었습니다. 실제 업비트 주문이 전송됩니다."
+            : "가상거래(Paper) 모드로 전환되었습니다. 실제 코인 시세를 기반으로 모의 체결됩니다.",
+      });
+    }
+
+    // ============================================================
+    // [알고리즘 검증소 (Algorithm Validation Lab) API]
+    // ============================================================
+    if (pathname === "/api/algo-lab/models" && req.method === "GET") {
+      const models = getAlgoLabModels(db);
+      return sendJson(res, 200, {
+        success: true,
+        models,
+        updated_at: nowKSTString(),
+      });
+    }
+
+    if (pathname === "/api/algo-lab/trades" && req.method === "GET") {
+      const modelId = parsedUrl.searchParams.get("model_id");
+      const limit = Number(parsedUrl.searchParams.get("limit") || 50);
+      const trades = getAlgoLabTrades(db, modelId, limit);
+      return sendJson(res, 200, {
+        success: true,
+        trades,
+      });
+    }
+
+    if (pathname === "/api/algo-lab/reset" && req.method === "POST") {
+      resetAlgoLab(db);
+      const models = getAlgoLabModels(db);
+      return sendJson(res, 200, {
+        success: true,
+        message: "알고리즘 검증소 모든 모델이 초기 자본 1,000,000원으로 초기화되었습니다.",
+        models,
+      });
+    }
+
+    if (pathname === "/api/algo-lab/run-cycle" && req.method === "POST") {
+      await executeAlgoLabCycle();
+      const models = getAlgoLabModels(db);
+      return sendJson(res, 200, {
+        success: true,
+        message: "실시간 알고리즘 검증 시뮬레이션이 1회 실행되었습니다.",
+        models,
+      });
+    }
+
     return sendJson(res, 404, { detail: "Not Found" });
   } catch (err) {
     return sendJson(res, 500, { detail: err.message });
@@ -2393,12 +2497,69 @@ async function executeBotBuyOrder(bot, market, orderKrw, currentPrice) {
     cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY";
 
   if (!isLive) {
-    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-      `${market} 매수 신호 포착 (주문예정 ${orderKrw.toLocaleString("ko-KR")}원 / 현재 모의모드 'paper' 설정으로 실주문 대기 중)`,
-      nowKSTString(),
+    // [가상거래 모드 (Paper Trading)]
+    // 실제 업비트 코인 지표(현재가, best bid)를 사용하여 즉시 가상 매수 체결
+    const bestBidPrice = (await fetchUpbitBestBidPrice(market, currentPrice)) || currentPrice;
+    if (!bestBidPrice || bestBidPrice <= 0) return false;
+
+    let rawVol = Math.floor(orderKrw) / bestBidPrice;
+    let limitVolNum = Number(rawVol.toFixed(8));
+    if (limitVolNum * bestBidPrice < 5000) {
+      limitVolNum = Number((limitVolNum + 0.00000001).toFixed(8));
+    }
+    const limitVolumeStr = limitVolNum.toFixed(8);
+    const actualBuyAmount = Math.floor(limitVolNum * bestBidPrice);
+    const fee = Math.floor(actualBuyAmount * 0.0005);
+    const orderUuid = `paper-bid-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const now = nowKSTString();
+
+    const insertTrade = db.prepare(`
+      INSERT INTO trades (
+        bot_id, market, buy_order_uuid, buy_price, buy_volume, buy_amount, buy_date, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+    `);
+    const tradeRes = insertTrade.run(
+      bot.bot_id,
+      market,
+      orderUuid,
+      bestBidPrice,
+      limitVolumeStr,
+      actualBuyAmount,
+      now
+    );
+    const tradeId = Number(tradeRes.lastInsertRowid);
+
+    const insertPos = db.prepare(`
+      INSERT INTO bot_positions (
+        bot_id, market, order_uuid, volume, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+    `);
+    insertPos.run(
+      bot.bot_id,
+      market,
+      orderUuid,
+      limitVolumeStr,
+      bestBidPrice,
+      actualBuyAmount,
+      fee,
+      tradeId,
+      now
+    );
+
+    const inv = db
+      .prepare(
+        "SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'"
+      )
+      .get(bot.bot_id);
+    const newVirtualKrw = Math.max(0, Math.floor(Number(latestBot.allocated_capital || 0) - Number(inv?.invested || 0)));
+
+    db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+      newVirtualKrw,
+      `[가상체결] ${market} ${bestBidPrice.toLocaleString("ko-KR")}원 매수 체결 (${actualBuyAmount.toLocaleString("ko-KR")}원 / 잔여 가상잔고 ${newVirtualKrw.toLocaleString("ko-KR")}원)`,
+      now,
       bot.bot_id
     );
-    return false;
+    return true;
   }
 
   // 매수 1호가(Best Bid) 조회 후 최유리 지정가 주문(ord_type: 'limit') 생성
@@ -2613,7 +2774,58 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
     cfg.access_key !== "YOUR_UPBIT_ACCESS_KEY";
 
   if (!isLive) {
-    return false;
+    // [가상거래 모드 (Paper Trading)]
+    // 실제 업비트 코인 지표(현재가 sellPrice)를 사용하여 가상 매도 체결
+    const sameMarketOpenPositions = db
+      .prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND market = ? AND status = 'OPEN' ORDER BY id ASC")
+      .all(bot.bot_id, currentPos.market);
+
+    const targetPositions = sameMarketOpenPositions.length > 0 ? sameMarketOpenPositions : [currentPos];
+    const dbSumVolume = targetPositions.reduce((acc, p) => acc + Number(p.volume || 0), 0);
+    if (dbSumVolume <= 0) return false;
+
+    const now = nowKSTString();
+    const sellUuid = `paper-ask-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const actualTotalFunds = Math.floor(dbSumVolume * Number(sellPrice));
+    const actualTotalFee = Math.floor(actualTotalFunds * 0.0005);
+    const netTotalFunds = Math.max(0, actualTotalFunds - actualTotalFee);
+
+    let totalProfitKrw = 0;
+    for (const p of targetPositions) {
+      const pVol = Number(p.volume || 0);
+      const posRatio = dbSumVolume > 0 ? pVol / dbSumVolume : 1 / targetPositions.length;
+      const posNetFunds = Math.floor(netTotalFunds * posRatio);
+      const posGrossFunds = Math.floor(actualTotalFunds * posRatio);
+      const profitKrw = posNetFunds - Number(p.buy_amount || 0);
+      const profitPct = Number(p.avg_buy_price || 0) > 0
+        ? ((Number(sellPrice) - Number(p.avg_buy_price)) / Number(p.avg_buy_price)) * 100.0
+        : 0;
+      totalProfitKrw += profitKrw;
+
+      db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(now, p.id);
+      db.prepare(`
+        UPDATE trades
+        SET sell_order_uuid = ?, sell_price = ?, sell_volume = ?, sell_amount = ?, sell_date = ?, profit_krw = ?, profit_pct = ?, status = 'COMPLETED'
+        WHERE id = ?
+      `).run(sellUuid, Number(sellPrice), String(p.volume), posGrossFunds, now, profitKrw, profitPct, p.trade_id);
+    }
+
+    const latestBot = db.prepare("SELECT allocated_capital FROM bots WHERE bot_id = ?").get(bot.bot_id);
+    const inv = db
+      .prepare(
+        "SELECT COALESCE(SUM(buy_amount), 0) AS invested FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'"
+      )
+      .get(bot.bot_id);
+    const newVirtualKrw = Math.max(0, Math.floor(Number(latestBot?.allocated_capital || 0) - Number(inv?.invested || 0)));
+
+    db.prepare("UPDATE bots SET virtual_krw = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+      newVirtualKrw,
+      `[가상체결] ${currentPos.market} ${reasonLabel} 매도 체결 (${totalProfitKrw >= 0 ? "+" : ""}${totalProfitKrw.toLocaleString("ko-KR")}원 / ${targetPositions.length}건 통합)`,
+      now,
+      bot.bot_id
+    );
+    checkAndHaltIfZeroBalance();
+    return true;
   }
 
   // 동일 봇·동일 마켓의 OPEN 포지션 조회
@@ -3081,6 +3293,33 @@ async function reconcileOpenPositionsWithUpbit() {
   }
 }
 
+let isAlgoLabCycleRunning = false;
+async function executeAlgoLabCycle() {
+  if (isAlgoLabCycleRunning) return;
+  isAlgoLabCycleRunning = true;
+  try {
+    const db = getDb();
+    if (!db) return;
+    const allMarkets = [
+      "KRW-BTC",
+      "KRW-ETH",
+      "KRW-SOL",
+      "KRW-XRP",
+      "KRW-DOGE",
+      "KRW-SUI",
+      "KRW-AVAX",
+      "KRW-SHIB",
+    ];
+    const tickerMap = await fetchUpbitTickersMap(allMarkets);
+    if (!tickerMap || tickerMap.size === 0) return;
+    await runAlgoLabCycle(db, tickerMap, fetchUpbitCandlesSorted);
+  } catch (err) {
+    console.warn("[AlgoLab] Cycle error:", err.message);
+  } finally {
+    isAlgoLabCycleRunning = false;
+  }
+}
+
 setTimeout(async () => {
   try {
     await pgSyncManager.connect();
@@ -3097,8 +3336,11 @@ setTimeout(async () => {
 
   await reconcileOpenPositionsWithUpbit();
   await runBotStrategiesCycle();
+  await executeAlgoLabCycle();
 }, 1000);
+
 setInterval(runBotStrategiesCycle, 10000);
+setInterval(executeAlgoLabCycle, 10000);
 
 // 30분 간격 암호화폐 뉴스 백그라운드 자동 수집
 setInterval(() => {
