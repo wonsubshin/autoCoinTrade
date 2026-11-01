@@ -450,6 +450,14 @@ export default function App() {
   });
   const fileInputRef = useRef(null);
 
+  // 입장 코드 관리 상태 (기본: stock)
+  const [entryCodeSetting, setEntryCodeSetting] = useState("");
+  const [newEntryCodeInput, setNewEntryCodeInput] = useState("");
+  const [newEntryCodeConfirm, setNewEntryCodeConfirm] = useState("");
+  const [entryCodeMsg, setEntryCodeMsg] = useState(null);
+  const [entryCodeLoading, setEntryCodeLoading] = useState(false);
+  const [showEntryCode, setShowEntryCode] = useState(false);
+
   // 6) Modal Popup 상태 (요구사항 20: 거래 시작/중지 모달, 요구사항 21: 잔고 0 이하 중지 알림 모달)
   const [modalInfo, setModalInfo] = useState({
     open: false,
@@ -587,6 +595,20 @@ export default function App() {
         message: data.message || "",
       }));
     } catch {}
+  }, []);
+
+  const fetchEntryCode = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/settings/entry-code`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.success && data.entry_code) {
+        setEntryCodeSetting(data.entry_code);
+        setNewEntryCodeInput(data.entry_code);
+      }
+    } catch (err) {
+      console.warn("Failed to fetch entry code:", err);
+    }
   }, []);
 
   const handleToggleTradeMode = async (targetMode) => {
@@ -875,20 +897,13 @@ export default function App() {
     }
   };
 
-  // 입장 코드 검증 (sws@2129)
+  // 입장 코드 검증 (기본: stock)
   const handleVerifyEntryCode = async (e) => {
     e.preventDefault();
     setGateError("");
     const trimmed = entryCodeInput.trim();
-    // 한글 자판 상태에서 sws@2129를 입력한 경우(ㄴㅈㄴ@2129)도 허용
-    const normalized = trimmed.replace(/^ㄴㅈㄴ/, "sws");
-
-    if (normalized === "sws@2129") {
-      sessionStorage.setItem("autoCoinTrade_auth", "true");
-      localStorage.setItem("autoCoinTrade_auth", "true");
-      setAuthenticated(true);
-      return;
-    }
+    // 한글 자판 상태에서 stock을 입력한 경우(ㄴ새차) 자동 영문 변환
+    const normalized = trimmed === "ㄴ새차" ? "stock" : trimmed;
 
     try {
       const resp = await fetch(`${API_BASE}/api/auth/verify`, {
@@ -905,7 +920,14 @@ export default function App() {
         setGateError(err.message || "입장 코드가 일치하지 않습니다.");
       }
     } catch {
-      setGateError("입장 코드가 일치하지 않습니다.");
+      // 서버 연결 불가 시 기본 코드 'stock' 폴백
+      if (normalized.toLowerCase() === "stock") {
+        sessionStorage.setItem("autoCoinTrade_auth", "true");
+        localStorage.setItem("autoCoinTrade_auth", "true");
+        setAuthenticated(true);
+      } else {
+        setGateError("서버 연결 실패 또는 입장 코드가 일치하지 않습니다.");
+      }
     }
   };
 
@@ -1108,6 +1130,7 @@ export default function App() {
     fetchAiBriefing();
     fetchTradeMode();
     fetchAlgoLabModels();
+    fetchEntryCode();
 
     const timer = setInterval(() => {
       fetchUpbitStatus();
@@ -1117,7 +1140,7 @@ export default function App() {
       fetchTradeMode();
     }, 6000);
     return () => clearInterval(timer);
-  }, [authenticated, selectedBotId, fetchTradeMode, fetchAlgoLabModels]);
+  }, [authenticated, selectedBotId, fetchTradeMode, fetchAlgoLabModels, fetchEntryCode]);
 
   // 알고리즘 검증소 활성화 시 5초 주기 실시간 모델 랭킹 및 체결 일지 자동 갱신
   useEffect(() => {
@@ -1135,7 +1158,10 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem("autoCoinTrade_menu", activeMenu);
     localStorage.setItem("autoCoinTrade_menu", activeMenu);
-  }, [activeMenu]);
+    if (activeMenu === "settings") {
+      fetchEntryCode();
+    }
+  }, [activeMenu, fetchEntryCode]);
 
   useEffect(() => {
     sessionStorage.setItem("autoCoinTrade_bot", selectedBotId);
@@ -1561,13 +1587,61 @@ export default function App() {
     }
   };
 
+  // 보안 및 입장 코드 변경 저장
+  const handleSaveEntryCode = async (e) => {
+    if (e) e.preventDefault();
+    setEntryCodeMsg(null);
+    const trimmed = newEntryCodeInput.trim();
+    if (!trimmed) {
+      setEntryCodeMsg({ type: "error", text: "새 입장 코드를 입력해주세요." });
+      return;
+    }
+    if (trimmed.length < 2) {
+      setEntryCodeMsg({ type: "error", text: "입장 코드는 최소 2자 이상이어야 합니다." });
+      return;
+    }
+    if (newEntryCodeConfirm !== "" && trimmed !== newEntryCodeConfirm.trim()) {
+      setEntryCodeMsg({ type: "error", text: "입장 코드 확인 값이 일치하지 않습니다." });
+      return;
+    }
+    setEntryCodeLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE}/api/settings/entry-code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entry_code: trimmed }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        setEntryCodeSetting(data.entry_code);
+        setNewEntryCodeInput(data.entry_code);
+        setNewEntryCodeConfirm("");
+        setEntryCodeMsg({
+          type: "success",
+          text: `입장 코드가 [${data.entry_code}]로 성공적으로 변경되었습니다. 다음 접속 시 변경된 코드로 입장하세요.`,
+        });
+        showModal(
+          "입장 코드 변경 완료",
+          `입장 코드가 [${data.entry_code}]로 변경되었습니다.\n다음 로그인 시 변경된 코드를 입력해주세요.`,
+          "success"
+        );
+      } else {
+        setEntryCodeMsg({ type: "error", text: data.message || "입장 코드 변경에 실패했습니다." });
+      }
+    } catch (err) {
+      setEntryCodeMsg({ type: "error", text: `서버 통신 오류: ${err.message}` });
+    } finally {
+      setEntryCodeLoading(false);
+    }
+  };
+
   const currentBot = useMemo(
     () => bots.find((b) => b.bot_id === selectedBotId) || bots[0] || null,
     [bots, selectedBotId]
   );
 
   // ------------------------------------------------------------------
-  // 입장 코드 화면 (요구사항 6: sws@2129)
+  // 입장 코드 화면 (기본: stock)
   // ------------------------------------------------------------------
   if (!authenticated) {
     return (
@@ -1582,7 +1656,7 @@ export default function App() {
             <input
               type="password"
               className="gate-input"
-              placeholder="입장 코드 입력"
+              placeholder="입장 코드 입력 (기본: stock)"
               value={entryCodeInput}
               onChange={(e) => setEntryCodeInput(e.target.value)}
               autoFocus
@@ -4094,10 +4168,140 @@ export default function App() {
               </div>
             </div>
 
+            {/* 3. 보안 및 입장 코드(Gate Code) 설정 */}
+            <div className="card" style={{ marginBottom: "20px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "14px",
+                  flexWrap: "wrap",
+                  gap: "10px",
+                }}
+              >
+                <div>
+                  <h3 style={{ fontSize: "16px", fontWeight: 700, margin: 0, color: "#f8fafc" }}>
+                    3. 보안 및 입장 코드(Gate Code) 설정
+                  </h3>
+                  <p style={{ margin: "4px 0 0 0", fontSize: "12.5px", color: "#94a3b8" }}>
+                    시스템 초기 진입 시 요구되는 개인 전용 보안 입장 코드를 조회하고 변경합니다. (기본값: <code>stock</code>)
+                  </p>
+                </div>
+                {entryCodeSetting && (
+                  <span
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: "8px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      background: "rgba(56, 189, 248, 0.15)",
+                      color: "#38bdf8",
+                      border: "1px solid rgba(56, 189, 248, 0.3)",
+                    }}
+                  >
+                    현재 적용 코드: {showEntryCode ? entryCodeSetting : "••••••••"}
+                  </span>
+                )}
+              </div>
+
+              <form onSubmit={handleSaveEntryCode} style={{ maxWidth: "600px" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: "12px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <div className="form-row" style={{ margin: 0 }}>
+                    <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span>새 입장 코드</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowEntryCode(!showEntryCode)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: "#94a3b8",
+                          fontSize: "11px",
+                          cursor: "pointer",
+                          padding: "0 2px",
+                        }}
+                      >
+                        {showEntryCode ? "숨기기 🙈" : "보기 👁️"}
+                      </button>
+                    </label>
+                    <input
+                      type={showEntryCode ? "text" : "password"}
+                      className="form-input"
+                      placeholder="새 입장 코드 입력"
+                      value={newEntryCodeInput}
+                      onChange={(e) => setNewEntryCodeInput(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-row" style={{ margin: 0 }}>
+                    <label>새 입장 코드 확인</label>
+                    <input
+                      type={showEntryCode ? "text" : "password"}
+                      className="form-input"
+                      placeholder="한 번 더 입력"
+                      value={newEntryCodeConfirm}
+                      onChange={(e) => setNewEntryCodeConfirm(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {entryCodeMsg && (
+                  <div
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: "6px",
+                      fontSize: "12.5px",
+                      marginBottom: "12px",
+                      background:
+                        entryCodeMsg.type === "success"
+                          ? "rgba(34, 197, 94, 0.15)"
+                          : "rgba(239, 68, 68, 0.15)",
+                      color: entryCodeMsg.type === "success" ? "#4ade80" : "#fca5a5",
+                      border: `1px solid ${
+                        entryCodeMsg.type === "success" ? "#22c55e" : "#ef4444"
+                      }`,
+                    }}
+                  >
+                    {entryCodeMsg.text}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={entryCodeLoading}
+                  >
+                    {entryCodeLoading ? "변경 저장 중..." : "🔑 입장 코드 변경 저장"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => {
+                      setNewEntryCodeInput("stock");
+                      setNewEntryCodeConfirm("stock");
+                    }}
+                    title="기본값 stock으로 입력란을 채웁니다."
+                  >
+                    기본값(stock)으로 입력
+                  </button>
+                </div>
+              </form>
+            </div>
+
             {/* 요구사항 13: 데이터 마이그레이션(JSON 내보내기) 및 복원(JSON 파일 읽기) */}
             <div className="card">
               <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "8px" }}>
-                3. 데이터 마이그레이션 및 복원 (JSON)
+                4. 데이터 마이그레이션 및 복원 (JSON)
               </h3>
               <p style={{ fontSize: "13px", color: "#94a3b8", marginBottom: "16px" }}>
                 SQLite 데이터베이스의 전체 데이터(봇 설정, 거래 내역, 포지션, 시스템 설정)를 JSON 파일로 백업(마이그레이션)하거나, JSON 파일을 읽어 복원합니다.

@@ -48,7 +48,7 @@ if [ -n "$PUBLIC_URL" ]; then
     echo "[SUCCESS] 외부 어디서나 접속 가능한 보안 주소가 생성되었습니다!"
     echo "==================================================="
     echo "• 외부 접속 HTTPS 주소 : $PUBLIC_URL"
-    echo "• 입장 코드            : sws@2129"
+    echo "• 입장 코드            : stock"
     echo "• 터널 중지 명령어     : ./stop_tunnel.sh"
     echo "• 터널 로그 확인       : tail -f logs/tunnel.log"
 else

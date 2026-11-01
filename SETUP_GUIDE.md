@@ -117,7 +117,7 @@ cd ..
   # 생성된 https://xxxx.trycloudflare.com 주소로 외부 어디서나 접속 가능
   # 터널 종료: ./stop_tunnel.sh
   ```
-- 기본 입장 코드: **`sws@2129`**
+- 기본 입장 코드: **`stock`**
 
 ---
 

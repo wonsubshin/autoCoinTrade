@@ -113,11 +113,11 @@ class ManualTradeRequest(BaseModel):
 
 
 # ------------------------------------------------------------------
-# 1. 입장 코드 인증 (요구사항 6: sws@2129)
+# 1. 입장 코드 인증 (기본: stock)
 # ------------------------------------------------------------------
 @app.post("/api/auth/verify")
 def verify_entry_code(payload: EntryCodeRequest):
-    expected_code = db_manager.get_setting("entry_code", "sws@2129")
+    expected_code = db_manager.get_setting("entry_code", "stock")
     if payload.code == expected_code:
         return {"authenticated": True, "message": "인증 성공"}
     return JSONResponse(

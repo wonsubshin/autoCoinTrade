@@ -320,7 +320,7 @@ class DatabaseManager:
             "zero_balance_halted": "0",
             "zero_balance_reason": "",
             "stats_start_date": "2026-10-01",
-            "entry_code": "sws@2129",
+            "entry_code": "stock",
         }
 
         with self.transaction() as tx:

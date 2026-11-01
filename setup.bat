@@ -58,6 +58,6 @@ echo ===================================================
 echo - Start services : start_services.bat (or start.bat)
 echo - Stop services  : stop_services.bat
 echo - Web Dashboard  : http://localhost:9000
-echo - Entry Code     : sws@2129
+echo - Entry Code     : stock
 echo ===================================================
 echo.

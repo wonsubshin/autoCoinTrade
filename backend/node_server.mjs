@@ -347,7 +347,7 @@ function initializeDatabase() {
   setSetting.run("zero_balance_halted", "0", now);
   setSetting.run("zero_balance_reason", "", now);
   setSetting.run("stats_start_date", "2026-10-01", now);
-  setSetting.run("entry_code", "sws@2129", now);
+  setSetting.run("entry_code", "stock", now);
 
   const insertBot = db.prepare(`
     INSERT INTO bots (
@@ -1749,8 +1749,14 @@ const server = http.createServer(async (req, res) => {
   try {
     if (pathname === "/api/auth/verify" && req.method === "POST") {
       const body = await readJsonBody(req);
-      const expected = getSetting("entry_code", "sws@2129");
-      if (body.code === expected) {
+      const expected = getSetting("entry_code", "stock");
+      const inputCode = String(body.code || "").trim();
+      const isKoreanMatch = expected.toLowerCase() === "stock" && (inputCode === "ㄴ새차" || inputCode.toLowerCase() === "stock");
+      if (
+        inputCode === expected ||
+        inputCode.toLowerCase() === expected.toLowerCase() ||
+        isKoreanMatch
+      ) {
         return sendJson(res, 200, { authenticated: true, message: "인증 성공" });
       }
       return sendJson(res, 401, { authenticated: false, message: "입장 코드가 일치하지 않습니다." });
@@ -2081,6 +2087,53 @@ const server = http.createServer(async (req, res) => {
         bots: getBots(),
         zero_balance_halted: haltInfo.halted,
         zero_balance_reason: haltInfo.reason,
+      });
+    }
+
+    if (pathname === "/api/settings/entry-code" && req.method === "GET") {
+      const currentCode = getSetting("entry_code", "stock");
+      return sendJson(res, 200, {
+        success: true,
+        entry_code: currentCode,
+      });
+    }
+
+    if (pathname === "/api/settings/entry-code" && (req.method === "POST" || req.method === "PUT")) {
+      const body = await readJsonBody(req);
+      const newCode = String(body.entry_code || "").trim();
+      if (!newCode) {
+        return sendJson(res, 400, {
+          success: false,
+          message: "새 입장 코드를 입력해주세요.",
+        });
+      }
+      if (newCode.length < 2) {
+        return sendJson(res, 400, {
+          success: false,
+          message: "입장 코드는 최소 2자 이상이어야 합니다.",
+        });
+      }
+      const now = nowKSTString();
+      db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('entry_code', ?, ?)").run(
+        newCode,
+        now
+      );
+      if (pgSyncManager.isConnected && pgSyncManager.pool) {
+        try {
+          await pgSyncManager.pool.query(
+            `INSERT INTO system_settings (key, value, updated_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
+            ["entry_code", newCode, now]
+          );
+        } catch (e) {
+          console.warn("[pgSync] entry_code 동기화 실패:", e.message);
+        }
+      }
+      return sendJson(res, 200, {
+        success: true,
+        message: "입장 코드가 성공적으로 변경되었습니다.",
+        entry_code: newCode,
       });
     }
 
