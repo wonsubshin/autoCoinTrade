@@ -25,7 +25,8 @@ echo "==================================================="
 LOG_FILE="$PROJECT_ROOT/logs/tunnel.log"
 rm -f "$LOG_FILE"
 
-setsid cloudflared tunnel --url http://localhost:9000 </dev/null >> "$LOG_FILE" 2>&1 &
+# IPv4(127.0.0.1) 명시적 바인딩 및 자동 업데이트로 인한 돌발 종료 방지(--no-autoupdate) 적용
+setsid cloudflared tunnel --no-autoupdate --url http://127.0.0.1:9000 </dev/null >> "$LOG_FILE" 2>&1 &
 TUNNEL_PID=$!
 echo "$TUNNEL_PID" > "$PROJECT_ROOT/logs/.tunnel.pid"
 

@@ -23,8 +23,8 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 fi
 
-# pkill fallback
-pkill -f "cloudflared tunnel" >/dev/null 2>&1 || true
+# pkill fallback (포트 9000 전용 터널만 종료하여 타 프로젝트 터널 보호)
+pkill -f "cloudflared.*:9000" >/dev/null 2>&1 || true
 
 echo "==================================================="
 echo "[완료] 외부 접속 터널이 안전하게 종료되었습니다."
