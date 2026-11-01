@@ -2576,6 +2576,75 @@ export default function App() {
               </div>
             </div>
 
+            {/* 가상거래 / 실거래 모드 통계 안내 카드 */}
+            <div
+              className="card"
+              style={{
+                marginBottom: "16px",
+                padding: "12px 18px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "10px",
+                background:
+                  tradeMode.mode === "paper"
+                    ? "linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(30, 27, 75, 0.35) 100%)"
+                    : "linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(69, 10, 10, 0.25) 100%)",
+                borderColor: tradeMode.mode === "paper" ? "rgba(99, 102, 241, 0.45)" : "rgba(239, 68, 68, 0.45)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <span style={{ fontSize: "22px" }}>{tradeMode.mode === "paper" ? "🧪" : "⚡"}</span>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <strong style={{ fontSize: "15px", color: tradeMode.mode === "paper" ? "#c7d2fe" : "#fca5a5" }}>
+                      {tradeMode.mode === "paper" ? "현재 [가상거래 모의투자] 통계 집계 중" : "현재 [업비트 실거래] 통계 집계 중"}
+                    </strong>
+                    <span
+                      style={{
+                        fontSize: "11px",
+                        padding: "2px 8px",
+                        borderRadius: "10px",
+                        fontWeight: 700,
+                        background: tradeMode.mode === "paper" ? "#4338ca" : "#b91c1c",
+                        color: "#ffffff",
+                      }}
+                    >
+                      {tradeMode.mode === "paper" ? "PAPER STATS" : "LIVE STATS"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "3px" }}>
+                    {tradeMode.mode === "paper"
+                      ? "실거래와 분리된 가상 원장(paper_trades)의 통계입니다. 실거래 누적 손익을 보시려면 우측 버튼을 눌러 실거래 모드로 전환하세요."
+                      : "업비트 실거래 원장(trades)의 누적 실현손익 및 코인별 손익 기여도 통계입니다."}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => handleToggleTradeMode()}
+                  disabled={tradeMode.loading}
+                  style={{
+                    padding: "8px 14px",
+                    fontSize: "13px",
+                    borderColor: tradeMode.mode === "paper" ? "#ef4444" : "#6366f1",
+                    color: tradeMode.mode === "paper" ? "#fca5a5" : "#c7d2fe",
+                  }}
+                  title="실거래 통계와 가상거래 통계를 전환합니다."
+                >
+                  {tradeMode.loading
+                    ? "전환 중..."
+                    : tradeMode.mode === "paper"
+                    ? "⚡ 실거래 통계 보기 (모드 전환)"
+                    : "🧪 가상거래 통계 보기 (모드 전환)"}
+                </button>
+              </div>
+            </div>
+
             {/* 요구사항 10: 일간 / 주간 / 월간 탭 구성 */}
             <div className="tab-bar">
               <button
