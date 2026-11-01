@@ -788,6 +788,76 @@ async function fetchUpbitAccountBalance() {
   }
 }
 
+async function fetchUpbitRecentOrders(limit = 20) {
+  const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  } catch {}
+
+  const accessKey = String(cfg.access_key || "").trim();
+  const secretKey = String(cfg.secret_key || "").trim();
+  const timeoutMs = Number(cfg.request_timeout_sec || 5) * 1000;
+  const checkedAt = nowKSTString();
+
+  if (
+    !accessKey ||
+    !secretKey ||
+    accessKey === "YOUR_UPBIT_ACCESS_KEY" ||
+    secretKey === "YOUR_UPBIT_SECRET_KEY"
+  ) {
+    return {
+      success: false,
+      orders: [],
+      message: "업비트 API 키가 설정되지 않았습니다.",
+      checked_at: checkedAt,
+    };
+  }
+
+  try {
+    await new Promise((r) => setTimeout(r, 120)); // Rate limit 0.12s
+    const queryParams = { state: "done", limit: String(limit) };
+    const token = createUpbitJwt(accessKey, secretKey, queryParams);
+    const qs = new URLSearchParams(queryParams).toString();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const resp = await fetch(`https://api.upbit.com/v1/orders?${qs}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (resp.status === 200) {
+      const orders = await resp.json();
+      return {
+        success: true,
+        orders: Array.isArray(orders) ? orders : [],
+        count: Array.isArray(orders) ? orders.length : 0,
+        checked_at: checkedAt,
+      };
+    } else {
+      const err = await resp.json().catch(() => ({}));
+      return {
+        success: false,
+        orders: [],
+        message: err?.error?.message || `업비트 주문 내역 조회 실패 (HTTP ${resp.status})`,
+        checked_at: checkedAt,
+      };
+    }
+  } catch (err) {
+    return {
+      success: false,
+      orders: [],
+      message: `업비트 API 호출 오류: ${err.message}`,
+      checked_at: checkedAt,
+    };
+  }
+}
+
 async function checkUpbitStatus() {
   const cfgPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
   let cfg = {};
@@ -1770,6 +1840,12 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/upbit/account" && req.method === "GET") {
       const accountInfo = await fetchUpbitAccountBalance();
       return sendJson(res, 200, accountInfo);
+    }
+
+    if (pathname === "/api/upbit/orders" && req.method === "GET") {
+      const limit = Math.min(100, Math.max(1, Number(parsedUrl.searchParams.get("limit") || 20)));
+      const ordersInfo = await fetchUpbitRecentOrders(limit);
+      return sendJson(res, 200, ordersInfo);
     }
 
     if (pathname === "/api/system/overview" && req.method === "GET") {
