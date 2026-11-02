@@ -2163,26 +2163,69 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { success: false, detail: "총 실전 운용 원금(total_capital)은 0원보다 커야 합니다." });
       }
 
-      // 실전 포지션 보호: 해제하려는 봇의 미청산 포지션 / 배정액이 이미 사용 금액보다 작아지는 경우 차단
+      // [미매도 포지션 승계] 실전 봇 교체 시 해제되는 봇의 미매도(OPEN) 포지션/거래를 신규 투입 봇이 이어받는다.
+      //  - 유지되는 봇의 거래정보는 그대로 유지
+      //  - 해제 봇 ↔ 신규 봇은 handover_map(명시) 또는 순서대로 1:1 매칭
+      //  - 승계 대상이 없는 해제 봇(봇 수 축소)이 미청산 포지션을 가진 경우에는 기존처럼 차단
       const selectedIdSet = new Set(ids);
-      for (const b of allBots) {
-        if (!selectedIdSet.has(b.bot_id) && Number(b.used_capital || 0) > 0) {
+      const currentLiveBots = allBots.filter((b) => Number(b.is_selected_for_live) === 1);
+      const removedBots = currentLiveBots.filter((b) => !selectedIdSet.has(b.bot_id));
+      const addedIds = ids.filter((id) => !currentLiveBots.some((b) => b.bot_id === id));
+
+      const handoverPairs = []; // { from: botObj, to: botId }
+      const usedFrom = new Set();
+      const usedTo = new Set();
+      if (Array.isArray(body.handover_map)) {
+        for (const m of body.handover_map) {
+          const from = normalizeBotId(String(m?.from_bot_id || ""));
+          const to = normalizeBotId(String(m?.to_bot_id || ""));
+          const fromBot = removedBots.find((b) => b.bot_id === from);
+          if (!fromBot || !addedIds.includes(to) || usedFrom.has(from) || usedTo.has(to)) {
+            return sendJson(res, 400, {
+              success: false,
+              detail: `승계 매핑이 올바르지 않습니다. (${from} → ${to}) 해제되는 봇 → 신규 투입 봇 1:1 로만 지정할 수 있습니다.`,
+            });
+          }
+          usedFrom.add(from);
+          usedTo.add(to);
+          handoverPairs.push({ from: fromBot, to });
+        }
+      }
+      const pendingRemoved = removedBots.filter((b) => !usedFrom.has(b.bot_id));
+      const pendingAdded = addedIds.filter((id) => !usedTo.has(id));
+      pendingRemoved.forEach((b, i) => {
+        if (i < pendingAdded.length) handoverPairs.push({ from: b, to: pendingAdded[i] });
+      });
+
+      const handedFromIds = new Set(handoverPairs.map((h) => h.from.bot_id));
+      for (const b of removedBots) {
+        if (!handedFromIds.has(b.bot_id) && Number(b.used_capital || 0) > 0) {
           return sendJson(res, 400, {
             success: false,
-            detail: `[${b.nickname || b.name}] 봇이 실전 미청산 포지션(${Math.floor(b.used_capital).toLocaleString("ko-KR")}원)을 보유 중이라 선택 해제할 수 없습니다. 먼저 포지션을 청산해주세요.`,
+            detail: `[${b.nickname || b.name}] 봇이 실전 미청산 포지션(${Math.floor(b.used_capital).toLocaleString("ko-KR")}원)을 보유 중이지만 승계할 신규 봇이 없습니다. 교체 투입할 봇을 선택하거나 먼저 포지션을 청산해주세요.`,
           });
         }
       }
+      const inheritedByTo = {};
+      for (const h of handoverPairs) inheritedByTo[h.to] = h.from;
+
       const plan = selected.map((it, idx) => {
         const bot = allBots.find((b) => b.bot_id === ids[idx]);
         const allocated = Math.floor(flooredTotal * Number(it.allocation_ratio));
-        return { bot, ratio: Number(it.allocation_ratio), allocated, used: Math.floor(Number(bot.used_capital || 0)) };
+        const inheritedUsed = inheritedByTo[bot.bot_id] ? Math.floor(Number(inheritedByTo[bot.bot_id].used_capital || 0)) : 0;
+        return {
+          bot,
+          ratio: Number(it.allocation_ratio),
+          allocated,
+          used: Math.floor(Number(bot.used_capital || 0)) + inheritedUsed,
+          inheritedFrom: inheritedByTo[bot.bot_id] || null,
+        };
       });
       const tooSmall = plan.find((pl) => pl.allocated < pl.used);
       if (tooSmall) {
         return sendJson(res, 400, {
           success: false,
-          detail: `[${tooSmall.bot.nickname || tooSmall.bot.name}] 배정 투자금(${tooSmall.allocated.toLocaleString("ko-KR")}원)이 이미 사용된 투자금(${tooSmall.used.toLocaleString("ko-KR")}원)보다 작습니다.`,
+          detail: `[${tooSmall.bot.nickname || tooSmall.bot.name}] 배정 투자금(${tooSmall.allocated.toLocaleString("ko-KR")}원)이 이미 사용된(승계 포지션 포함) 투자금(${tooSmall.used.toLocaleString("ko-KR")}원)보다 작습니다.`,
         });
       }
 
@@ -2201,6 +2244,11 @@ const server = http.createServer(async (req, res) => {
       const now = nowKSTString();
       try {
         db.exec("BEGIN");
+        // 해제되는 봇의 미매도 포지션/거래를 신규 투입 봇으로 승계 (체결 완료 이력은 기존 봇에 유지)
+        for (const h of handoverPairs) {
+          db.prepare("UPDATE bot_positions SET bot_id = ? WHERE bot_id = ? AND status = 'OPEN'").run(h.to, h.from.bot_id);
+          db.prepare("UPDATE trades SET bot_id = ? WHERE bot_id = ? AND status = 'HOLDING'").run(h.to, h.from.bot_id);
+        }
         db.prepare(`
           UPDATE bots
           SET is_selected_for_live = 0, is_running = 0, allocation_ratio = 0,
@@ -2214,6 +2262,10 @@ const server = http.createServer(async (req, res) => {
             SET is_selected_for_live = 1, allocation_ratio = ?, allocated_capital = ?, virtual_krw = ?, updated_at = ?
             WHERE bot_id = ?
           `).run(Number((pl.ratio * 100).toFixed(2)), pl.allocated, Math.max(0, pl.allocated - pl.used), now, pl.bot.bot_id);
+          // 승계 봇은 기존 봇의 가동 상태를 이어받아 승계 포지션의 익절/손절 감시가 끊기지 않게 한다
+          if (pl.inheritedFrom) {
+            db.prepare("UPDATE bots SET is_running = ? WHERE bot_id = ?").run(Number(pl.inheritedFrom.is_running) === 1 ? 1 : 0, pl.bot.bot_id);
+          }
         }
         db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('total_capital', ?, ?)").run(String(flooredTotal), now);
         db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('capital_configured', '1', ?)").run(now);
@@ -2230,7 +2282,13 @@ const server = http.createServer(async (req, res) => {
       const liveBots = getBots("live");
       return sendJson(res, 200, {
         success: true,
-        message: `실제 거래 담당 봇 ${plan.length}개와 투자금 배분(소수점 버림)이 저장되었습니다.`,
+        message:
+          `실제 거래 담당 봇 ${plan.length}개와 투자금 배분(소수점 버림)이 저장되었습니다.` +
+          (handoverPairs.length > 0
+            ? "\n[미매도 포지션 승계] " +
+              handoverPairs.map((h) => `${h.from.nickname || h.from.bot_id} → ${allBots.find((b) => b.bot_id === h.to)?.nickname || h.to}`).join(", ")
+            : ""),
+        handover: handoverPairs.map((h) => ({ from_bot_id: h.from.bot_id, to_bot_id: h.to })),
         total_capital: flooredTotal,
         selected_bots: plan.map((pl) => ({
           bot_id: pl.bot.bot_id,
