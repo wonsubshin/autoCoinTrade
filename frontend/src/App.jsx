@@ -407,11 +407,14 @@ export default function App() {
   // 4) 봇 목록, 거래 내역, 통계, 자금 분배 상태
   const [bots, setBots] = useState([]);
   const [selectedBotId, setSelectedBotId] = useState(() => {
-    return (
+    const saved =
       sessionStorage.getItem("autoCoinTrade_bot") ||
       localStorage.getItem("autoCoinTrade_bot") ||
-      "bot_volatility"
-    );
+      "bot_01";
+    if (saved === "bot_volatility") return "bot_01";
+    if (saved === "bot_dual_momentum") return "bot_03";
+    if (saved === "bot_bollinger_reversal") return "bot_05";
+    return saved;
   });
   const [trades, setTrades] = useState([]);
   const [stats, setStats] = useState({
@@ -696,7 +699,7 @@ export default function App() {
   const [selectedLiveBotIds, setSelectedLiveBotIds] = useState(["bot_01", "bot_03", "bot_05"]);
   const [savedLiveBotIds, setSavedLiveBotIds] = useState(["bot_01", "bot_03", "bot_05"]);
   const [isLiveConfigDirty, setIsLiveConfigDirty] = useState(false);
-  const [liveAllocRatios, setLiveAllocRatios] = useState({ bot_01: 40, bot_03: 20, bot_05: 40 });
+  const [liveAllocRatios, setLiveAllocRatios] = useState({ bot_01: 40, bot_03: 40, bot_05: 20 });
   const [savingLiveBots, setSavingLiveBots] = useState(false);
   const [statsModeTab, setStatsModeTab] = useState("live"); // 'live' | 'paper'
 

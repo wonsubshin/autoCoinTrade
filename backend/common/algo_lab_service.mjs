@@ -340,14 +340,14 @@ export const ARENA_BOT_DEFS = [
   {
     bot_id: "bot_01",
     legacy_ids: ["bot_volatility"],
-    name: "변동성 돌파 알파 (Larry Williams Volatility Breakout)",
+    name: "필터 결합형 변동성 돌파 봇",
     nickname: "돌파봇-알파",
     strategy_type: "VOLATILITY_BREAKOUT",
-    description: "전일 변동폭(High-Low)×K(0.45) 돌파 & 단기 거래량 증가 시 매수 | 익일 시가 또는 목표 수익 도달 시 청산",
+    description: "장중 단타 / 1일 보유 | 변동성 돌파(K=0.4) + 20일 이평선 추세 필터 전략",
     min_volume_krw: 10000000000,
     stop_loss_pct: 2.5,
     take_profit_pct: 4.5,
-    config: { k_value: 0.45, ma_period: 20, volume_multiplier: 1.2, order_ratio: 0.3, max_positions: 2 },
+    config: { k_value: 0.4, ma_period: 20, volume_multiplier: 1.2, order_ratio: 0.3, max_positions: 2 },
   },
   {
     bot_id: "bot_02",
@@ -364,10 +364,10 @@ export const ARENA_BOT_DEFS = [
   {
     bot_id: "bot_03",
     legacy_ids: ["bot_dual_momentum"],
-    name: "듀얼 모멘텀 스윙 (Dual Momentum)",
+    name: "듀얼 모멘텀 스윙 봇",
     nickname: "모멘텀봇-베타",
     strategy_type: "DUAL_MOMENTUM",
-    description: "거래대금 상위 코인 중 최근 7일 상대 모멘텀 상위 2종목 & 절대 모멘텀(수익률 > +1.5%) 돌파 시 매수",
+    description: "상대 모멘텀(상위 2종목) + 절대 모멘텀(+1.5% 이상) 스윙 전략",
     min_volume_krw: 15000000000,
     stop_loss_pct: 3.5,
     take_profit_pct: 7.0,
@@ -388,10 +388,10 @@ export const ARENA_BOT_DEFS = [
   {
     bot_id: "bot_05",
     legacy_ids: ["bot_bollinger_reversal"],
-    name: "볼린저 밴드 역추세 반등 (BB Reversal)",
+    name: "고변동성 볼린저 밴드 역추세 봇",
     nickname: "볼린저봇-감마",
     strategy_type: "BOLLINGER_REVERSAL",
-    description: "15분봉 볼린저 밴드 하단(-2σ) 터치 후 양봉 복귀 & RSI(14) ≤ 30 과매도 반등 시 매수 (+3.5% 익절 / -2.0% 손절)",
+    description: "고변동성 코인 볼린저 밴드(20, 2.0σ) 15분봉 단기 반등 전략",
     min_volume_krw: 8000000000,
     stop_loss_pct: 2.0,
     take_profit_pct: 3.5,
@@ -903,26 +903,13 @@ export function seedArenaBots(db, { hadSelectionColumn = true } = {}) {
   // 가상거래 상시 가동(항상 1) 보장
   db.prepare("UPDATE bots SET paper_is_running = 1").run();
 
-  // 실전 담당 봇 초기 선택
+  // 실전 담당 봇 초기 선택 (기존 실전 3대 봇: 돌파봇-알파 40%, 모멘텀봇-베타 40%, 볼린저봇-감마 20%)
   const selectedCount = db.prepare("SELECT COUNT(*) AS cnt FROM bots WHERE is_selected_for_live = 1").get().cnt;
   if (isFreshInstall || !hadSelectionColumn || selectedCount === 0) {
-    let targets;
-    if (isFreshInstall) {
-      targets = ["bot_01", "bot_02", "bot_03"];
-    } else {
-      targets = [...new Set(existingBefore.map(normalizeBotId))].filter((id) => ARENA_BOT_IDS.includes(id));
-      if (targets.length === 0) targets = ["bot_01", "bot_02", "bot_03"];
-      targets = targets.slice(0, 3);
-    }
     db.prepare("UPDATE bots SET is_selected_for_live = 0").run();
-    const setSel = db.prepare("UPDATE bots SET is_selected_for_live = 1 WHERE bot_id = ?");
-    for (const id of targets) setSel.run(id);
-    if (isFreshInstall) {
-      const setRatio = db.prepare("UPDATE bots SET allocation_ratio = ? WHERE bot_id = ?");
-      setRatio.run(34, "bot_01");
-      setRatio.run(33, "bot_02");
-      setRatio.run(33, "bot_03");
-    }
+    db.prepare("UPDATE bots SET is_selected_for_live = 1, is_running = 1, allocation_ratio = 40 WHERE bot_id = 'bot_01'").run();
+    db.prepare("UPDATE bots SET is_selected_for_live = 1, is_running = 1, allocation_ratio = 40 WHERE bot_id = 'bot_03'").run();
+    db.prepare("UPDATE bots SET is_selected_for_live = 1, is_running = 1, allocation_ratio = 20 WHERE bot_id = 'bot_05'").run();
   }
   // 미선택 봇은 실전 가동 금지
   db.prepare("UPDATE bots SET is_running = 0 WHERE is_selected_for_live != 1").run();
