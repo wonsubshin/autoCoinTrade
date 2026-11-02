@@ -693,8 +693,10 @@ export default function App() {
   const [arenaStatusInfo, setArenaStatusInfo] = useState({ last_cycle_at: "", last_cycle_summary: "" });
 
   // 13) 설정 화면: 실전 담당 봇(1~3개) 선택 및 동적 투자금 배분 상태
-  const [selectedLiveBotIds, setSelectedLiveBotIds] = useState(["bot_01", "bot_02", "bot_03"]);
-  const [liveAllocRatios, setLiveAllocRatios] = useState({ bot_01: 34, bot_02: 33, bot_03: 33 });
+  const [selectedLiveBotIds, setSelectedLiveBotIds] = useState(["bot_01", "bot_03", "bot_05"]);
+  const [savedLiveBotIds, setSavedLiveBotIds] = useState(["bot_01", "bot_03", "bot_05"]);
+  const [isLiveConfigDirty, setIsLiveConfigDirty] = useState(false);
+  const [liveAllocRatios, setLiveAllocRatios] = useState({ bot_01: 40, bot_03: 20, bot_05: 40 });
   const [savingLiveBots, setSavingLiveBots] = useState(false);
   const [statsModeTab, setStatsModeTab] = useState("live"); // 'live' | 'paper'
 
@@ -729,7 +731,7 @@ export default function App() {
   }, [selectedAlgoModelId]);
 
   const handleResetAlgoLab = async () => {
-    if (!window.confirm("가상거래 전용 원장(paper_trades)과 10대 알고리즘 가상 경쟁을 초기화하시겠습니까?\n(실제거래 원장에는 일절 영향을 주지 않습니다)")) {
+    if (!window.confirm("가상거래 전용 원장(paper_trades)과 10대 알고리즘 가상 경쟁을 초기화하시겠습니까?\n(각 봇의 초기 투자자금이 100만 원으로 재설정되고 모든 가상 거래 내역이 삭제된 후 처음부터 다시 경쟁합니다)")) {
       return;
     }
     setAlgoLabLoading(true);
@@ -767,25 +769,20 @@ export default function App() {
     }
   };
 
-  // 실전 담당 봇 선택 토글 (최소 1개 ~ 최대 3개 제한)
+  // 실전 담당 봇 선택 토글 (최소 1개 ~ 최대 3개 제한 및 비율 자동 재배분)
   const handleToggleLiveBotSelection = (botId) => {
     setSelectedLiveBotIds((prev) => {
       const validBotList = (algoModels.length > 0 ? algoModels : bots).map((b) => b.bot_id);
       const sanitized = validBotList.length > 0 ? prev.filter((id) => validBotList.includes(id)) : [...prev];
 
       const isAlready = sanitized.includes(botId);
+      let next;
       if (isAlready) {
         if (sanitized.length <= 1) {
           showModal("실전 봇 선택 제한", "실제 거래 담당 봇은 최소 1개 이상 선택해야 합니다.", "warning");
           return sanitized;
         }
-        const next = sanitized.filter((id) => id !== botId);
-        setLiveAllocRatios((rPrev) => {
-          const cp = { ...rPrev };
-          delete cp[botId];
-          return cp;
-        });
-        return next;
+        next = sanitized.filter((id) => id !== botId);
       } else {
         if (sanitized.length >= 3) {
           showModal(
@@ -795,9 +792,72 @@ export default function App() {
           );
           return sanitized;
         }
-        const next = [...sanitized, botId];
-        return next;
+        next = [...sanitized, botId];
       }
+
+      // 봇 구성이 변경되었으므로 비율을 자동 재배분(합계 100%)하고 dirty 플래그를 세웁니다.
+      const count = next.length;
+      const base = Math.floor(100 / count);
+      const rem = 100 - base * count;
+      const nextRatios = {};
+      next.forEach((id, idx) => {
+        nextRatios[id] = idx === 0 ? base + rem : base;
+      });
+      setLiveAllocRatios(nextRatios);
+      setIsLiveConfigDirty(true);
+      return next;
+    });
+  };
+
+  // 실전 봇 투자금 비율 실시간 연동 (어느 한쪽을 수정하면 나머지가 자동 조정되어 항상 정확히 100% 유지)
+  const handleLiveRatioChange = (changedBotId, newRawVal) => {
+    const val = Math.max(0, Math.min(100, Math.round(Number(newRawVal) || 0)));
+    setIsLiveConfigDirty(true);
+
+    setLiveAllocRatios((prev) => {
+      const ids = selectedLiveBotIds;
+      if (ids.length <= 1) {
+        return { [changedBotId]: 100 };
+      }
+      if (ids.length === 2) {
+        const otherId = ids.find((id) => id !== changedBotId);
+        return {
+          [changedBotId]: val,
+          [otherId]: 100 - val,
+        };
+      }
+      if (ids.length === 3) {
+        const others = ids.filter((id) => id !== changedBotId);
+        const [botB, botC] = others;
+        const rem = 100 - val;
+        const oldB = Number(prev[botB] ?? 0);
+        const oldC = Number(prev[botC] ?? 0);
+        const oldSum = oldB + oldC;
+
+        let newB, newC;
+        if (oldSum > 0) {
+          newB = Math.round(rem * (oldB / oldSum));
+          newC = rem - newB;
+          if (newB < 0) {
+            newB = 0;
+            newC = rem;
+          } else if (newC < 0) {
+            newC = 0;
+            newB = rem;
+          }
+        } else {
+          newB = Math.floor(rem / 2);
+          newC = rem - newB;
+        }
+
+        return {
+          ...prev,
+          [changedBotId]: val,
+          [botB]: newB,
+          [botC]: newC,
+        };
+      }
+      return { ...prev, [changedBotId]: val };
     });
   };
 
@@ -812,6 +872,7 @@ export default function App() {
       nextRatios[id] = idx === 0 ? base + rem : base;
     });
     setLiveAllocRatios(nextRatios);
+    setIsLiveConfigDirty(true);
   };
 
   // 실전 봇 선택 및 동적 투자금 배분 저장 (PUT /api/settings/live-bots)
@@ -848,6 +909,8 @@ export default function App() {
       });
       const data = await resp.json();
       if (resp.ok && data.success) {
+        setSavedLiveBotIds([...selectedLiveBotIds]);
+        setIsLiveConfigDirty(false);
         await fetchOverviewAndBots(false, "live");
         await fetchAlgoLabModels();
         showModal(
@@ -1111,13 +1174,17 @@ export default function App() {
       setBotEditForms(newEditForms);
       if (liveIds.length > 0) {
         setSelectedLiveBotIds(liveIds);
+        setSavedLiveBotIds(liveIds);
         setLiveAllocRatios(liveRats);
+        setIsLiveConfigDirty(false);
       } else if (botList.length > 0) {
         const fallbackIds = botList.slice(0, 3).map((b) => b.bot_id);
         setSelectedLiveBotIds(fallbackIds);
+        setSavedLiveBotIds(fallbackIds);
         const fbRats = {};
         fallbackIds.forEach((id, i) => { fbRats[id] = i === 0 ? 34 : 33; });
         setLiveAllocRatios(fbRats);
+        setIsLiveConfigDirty(false);
       }
 
       // 요구사항 21: 설정된 잔고가 0 이하로 떨어져 모든 봇이 거래 중지된 경우 거래현황 진입 시 Modal Popup 표시
@@ -1498,6 +1565,14 @@ export default function App() {
 
   // 요구사항 20: 거래 시작 / 중단 수동 제어 및 정상 동작 확인 Modal Popup 표기
   const handleBotStartStop = async (botId, start) => {
+    if (start && isLiveConfigDirty) {
+      showModal(
+        "설정 저장 필수",
+        "실전 거래 담당 봇 구성 또는 투자금 비율이 변경되었습니다.\n설정(⚙️) 메뉴에서 먼저 [실전 거래 담당 봇 및 투자금 설정 저장]을 완료해야 거래를 시작할 수 있습니다.",
+        "warning"
+      );
+      return;
+    }
     const endpoint = start ? "start" : "stop";
     try {
       const resp = await fetch(`${API_BASE}/api/bots/${botId}/${endpoint}`, {
@@ -1928,6 +2003,43 @@ export default function App() {
            ============================================================ */}
         {activeMenu === "trades" && (
           <div>
+            {isLiveConfigDirty && (
+              <div
+                className="card"
+                style={{
+                  marginBottom: "16px",
+                  background: "linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(185, 28, 28, 0.35))",
+                  border: "2px solid #ef4444",
+                  padding: "16px 20px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "12px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <span style={{ fontSize: "24px" }}>⚠️</span>
+                  <div>
+                    <strong style={{ color: "#fca5a5", fontSize: "15px" }}>
+                      실전 봇 구성 또는 투자금 비율 설정이 변경되었습니다! (저장 미완료)
+                    </strong>
+                    <div style={{ fontSize: "12.5px", color: "#f1f5f9", marginTop: "4px" }}>
+                      설정 메뉴에서 비율(합계 100%)을 확인하시고 <strong>[💾 실전 거래 담당 봇 및 투자금 설정 저장]</strong> 버튼을 완료해야 실제 투자를 진행할 수 있습니다.
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => handleMenuChange("settings")}
+                  style={{ padding: "8px 16px", fontSize: "13px", fontWeight: 700 }}
+                >
+                  ⚙️ 설정으로 이동하여 저장 완료하기
+                </button>
+              </div>
+            )}
+
             <div className="page-header">
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
@@ -4195,10 +4307,32 @@ export default function App() {
                   padding: "18px",
                 }}
               >
+                {isLiveConfigDirty && (
+                  <div
+                    style={{
+                      background: "rgba(245, 158, 11, 0.15)",
+                      border: "1px solid #f59e0b",
+                      borderRadius: "8px",
+                      padding: "10px 14px",
+                      marginBottom: "14px",
+                      color: "#fde68a",
+                      fontSize: "12.5px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                    }}
+                  >
+                    <span style={{ fontSize: "16px" }}>⚠️</span>
+                    <span>
+                      실전 봇 구성 또는 비율이 변경되었습니다. 아래 각 봇의 비율을 확인하신 후(슬라이더 조작 시 합계 100% 자동 유지), 반드시 하단의 <strong>[💾 실전 거래 담당 봇 및 투자금 설정 저장]</strong>을 눌러야 실제 투자가 활성화됩니다.
+                    </span>
+                  </div>
+                )}
+
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
                   <div style={{ fontSize: "13.5px", fontWeight: 700, color: "#e2e8f0", display: "flex", alignItems: "center", gap: "6px" }}>
                     <span style={{ background: "#10b981", color: "#fff", borderRadius: "50%", width: "20px", height: "20px", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "11px" }}>2</span>
-                    <span>선택된 실전 봇({selectedLiveBotIds.length}개) 동적 투자금 및 비율(%) 배분</span>
+                    <span>선택된 실전 봇({selectedLiveBotIds.length}개) 동적 투자금 및 비율(%) 배분 (항상 합계 100% 자동 연동)</span>
                   </div>
                   <button
                     type="button"
@@ -4273,28 +4407,34 @@ export default function App() {
                               <span style={{ fontSize: "11px", color: "#64748b" }}>{botId}</span>
                             </div>
 
-                            <div style={{ marginBottom: "10px" }}>
-                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: "4px" }}>
+                            <div style={{ marginBottom: "12px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12.5px", marginBottom: "6px" }}>
                                 <span style={{ color: "#94a3b8" }}>투자 비율 (%)</span>
-                                <strong style={{ color: "#38bdf8" }}>{ratio}%</strong>
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    className="form-input"
+                                    value={ratio}
+                                    onChange={(e) => handleLiveRatioChange(botId, e.target.value)}
+                                    style={{ width: "65px", padding: "4px 8px", fontSize: "13px", fontWeight: 700, textAlign: "right" }}
+                                  />
+                                  <span style={{ color: "#38bdf8", fontWeight: 700 }}>%</span>
+                                </div>
                               </div>
                               <input
-                                type="number"
-                                step="1"
+                                type="range"
                                 min="0"
                                 max="100"
-                                className="form-input"
-                                placeholder="비율 (%)"
+                                step="1"
                                 value={ratio}
-                                onChange={(e) => {
-                                  const val = e.target.value === "" ? 0 : Number(e.target.value);
-                                  setLiveAllocRatios((prev) => ({
-                                    ...prev,
-                                    [botId]: val,
-                                  }));
-                                }}
-                                style={{ width: "100%", marginBottom: "6px" }}
+                                onChange={(e) => handleLiveRatioChange(botId, e.target.value)}
+                                style={{ width: "100%", accentColor: "#3b82f6", cursor: "pointer", marginBottom: "4px" }}
                               />
+                              <div style={{ fontSize: "10.5px", color: "#64748b" }}>
+                                슬라이더 조절 시 다른 봇들의 비율이 자동 계산되어 항상 100%가 유지됩니다.
+                              </div>
                             </div>
 
                             <div style={{ background: "#0f172a", borderRadius: "6px", padding: "10px", fontSize: "12px" }}>

@@ -11,7 +11,7 @@
 
 export const PAPER_FEE_RATE = 0.0005;
 export const PAPER_MIN_ORDER_KRW = 5000;
-export const DEFAULT_PAPER_CAPITAL = 10000000;
+export const DEFAULT_PAPER_CAPITAL = 1000000;
 
 export function nowKSTString() {
   const d = new Date();
@@ -1293,11 +1293,12 @@ export function resetArena(db) {
   db.exec("DELETE FROM paper_trades; DELETE FROM paper_bot_positions;");
   db.prepare(`
     UPDATE bots
-    SET paper_virtual_krw = paper_initial_capital,
-        paper_peak_equity = paper_initial_capital,
+    SET paper_initial_capital = ${DEFAULT_PAPER_CAPITAL},
+        paper_virtual_krw = ${DEFAULT_PAPER_CAPITAL},
+        paper_peak_equity = ${DEFAULT_PAPER_CAPITAL},
         paper_mdd_pct = 0,
         paper_is_running = 1,
-        paper_status_msg = '가상거래 초기화 완료 (순수 알고리즘 경쟁 재시작)'
+        paper_status_msg = '가상거래 초기화 완료 (100만원 시드 순수 알고리즘 경쟁 재시작)'
   `).run();
   cooldownMap.clear();
   peakMap.clear();
