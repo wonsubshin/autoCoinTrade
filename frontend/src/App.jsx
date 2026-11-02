@@ -386,13 +386,13 @@ export default function App() {
   const [entryCodeInput, setEntryCodeInput] = useState("");
   const [gateError, setGateError] = useState("");
 
-  // 2) 좌측 메뉴 상태 (거래현황 | 통계 | 설정 - 새로고침 시 현재 메뉴 유지)
+  // 2) 좌측 메뉴 상태 (실제거래 현황 | 가상거래 경쟁 | 통계 | 뉴스 | 설정)
   const [activeMenu, setActiveMenu] = useState(() => {
-    return (
+    const saved =
       sessionStorage.getItem("autoCoinTrade_menu") ||
       localStorage.getItem("autoCoinTrade_menu") ||
-      "trades"
-    );
+      "trades";
+    return saved === "algo-lab" ? "arena" : saved;
   });
 
   // 3) 업비트 통신 상태 (요구사항 19: 정상 초록 / 지연 노랑 / 불가 빨강 + 이유 툴팁)
@@ -683,22 +683,31 @@ export default function App() {
     }
   };
 
-  // 12) 알고리즘 검증소 (Algorithm Validation Lab) 상태
+  // 12) 10대 알고리즘 상시 가상 경쟁(Arena) 상태
   const [algoModels, setAlgoModels] = useState([]);
   const [algoTrades, setAlgoTrades] = useState([]);
   const [selectedAlgoModelId, setSelectedAlgoModelId] = useState("all");
   const [algoLabLoading, setAlgoLabLoading] = useState(false);
   const [algoLabCycleRunning, setAlgoLabCycleRunning] = useState(false);
   const [algoLabLastUpdated, setAlgoLabLastUpdated] = useState("");
+  const [arenaStatusInfo, setArenaStatusInfo] = useState({ last_cycle_at: "", last_cycle_summary: "" });
+
+  // 13) 설정 화면: 실전 담당 봇(1~3개) 선택 및 동적 투자금 배분 상태
+  const [selectedLiveBotIds, setSelectedLiveBotIds] = useState(["bot_01", "bot_02", "bot_03"]);
+  const [liveAllocRatios, setLiveAllocRatios] = useState({ bot_01: 34, bot_02: 33, bot_03: 33 });
+  const [savingLiveBots, setSavingLiveBots] = useState(false);
+  const [statsModeTab, setStatsModeTab] = useState("live"); // 'live' | 'paper'
 
   const fetchAlgoLabModels = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE}/api/algo-lab/models`);
+      const resp = await fetch(`${API_BASE}/api/arena/leaderboard`);
       if (!resp.ok) return;
       const data = await resp.json();
-      if (data.success && Array.isArray(data.models)) {
-        setAlgoModels(data.models);
-        setAlgoLabLastUpdated(data.updated_at || "");
+      const list = Array.isArray(data.leaderboard) ? data.leaderboard : Array.isArray(data.models) ? data.models : [];
+      setAlgoModels(list);
+      setAlgoLabLastUpdated(data.updated_at || "");
+      if (data.status) {
+        setArenaStatusInfo(data.status);
       }
     } catch {}
   }, []);
@@ -708,8 +717,8 @@ export default function App() {
       const targetId = modelId !== undefined && modelId !== null ? modelId : selectedAlgoModelId;
       const url =
         targetId && targetId !== "all"
-          ? `${API_BASE}/api/algo-lab/trades?model_id=${encodeURIComponent(targetId)}&limit=50`
-          : `${API_BASE}/api/algo-lab/trades?limit=50`;
+          ? `${API_BASE}/api/arena/trades?bot_id=${encodeURIComponent(targetId)}&limit=80`
+          : `${API_BASE}/api/arena/trades?limit=80`;
       const resp = await fetch(url);
       if (!resp.ok) return;
       const data = await resp.json();
@@ -720,19 +729,17 @@ export default function App() {
   }, [selectedAlgoModelId]);
 
   const handleResetAlgoLab = async () => {
-    if (!window.confirm("알고리즘 검증소 모든 모델(100만 원) 및 가상거래 이력을 초기화하고 처음부터 다시 거래하시겠습니까?")) {
+    if (!window.confirm("가상거래 전용 원장(paper_trades)과 10대 알고리즘 가상 경쟁을 초기화하시겠습니까?\n(실제거래 원장에는 일절 영향을 주지 않습니다)")) {
       return;
     }
     setAlgoLabLoading(true);
     try {
-      const resp = await fetch(`${API_BASE}/api/paper-trades/reset`, { method: "POST" });
+      const resp = await fetch(`${API_BASE}/api/arena/reset`, { method: "POST" });
       const data = await resp.json();
       if (resp.ok && data.success) {
         await fetchAlgoLabModels();
         await fetchAlgoLabTrades(selectedAlgoModelId);
-        await fetchOverviewAndBots(false, "paper");
-        await fetchTrades(selectedBotId, "paper");
-        showModal("가상거래 및 검증소 초기화 완료", data.message, "success");
+        showModal("가상거래 경쟁 초기화 완료", data.message, "success");
       } else {
         alert(data.message || "초기화에 실패했습니다.");
       }
@@ -746,16 +753,109 @@ export default function App() {
   const handleRunAlgoLabCycle = async () => {
     setAlgoLabCycleRunning(true);
     try {
-      const resp = await fetch(`${API_BASE}/api/algo-lab/run-cycle`, { method: "POST" });
+      const resp = await fetch(`${API_BASE}/api/arena/run-cycle`, { method: "POST" });
       const data = await resp.json();
       if (resp.ok && data.success) {
-        setAlgoModels(data.models || []);
-        fetchAlgoLabTrades(selectedAlgoModelId);
+        await fetchAlgoLabModels();
+        await fetchAlgoLabTrades(selectedAlgoModelId);
+        showModal("가상 시뮬레이션 완료", "10대 알고리즘 순수 시뮬레이션 1사이클이 즉시 실행되었습니다.", "success");
       }
     } catch (err) {
       console.warn("Run cycle error:", err);
     } finally {
       setAlgoLabCycleRunning(false);
+    }
+  };
+
+  // 실전 담당 봇 선택 토글 (최소 1개 ~ 최대 3개 제한)
+  const handleToggleLiveBotSelection = (botId) => {
+    setSelectedLiveBotIds((prev) => {
+      const isAlready = prev.includes(botId);
+      if (isAlready) {
+        if (prev.length <= 1) {
+          showModal("실전 봇 선택 제한", "실제 거래 담당 봇은 최소 1개 이상 선택해야 합니다.", "warning");
+          return prev;
+        }
+        const next = prev.filter((id) => id !== botId);
+        // 비율 재조정
+        setLiveAllocRatios((rPrev) => {
+          const cp = { ...rPrev };
+          delete cp[botId];
+          return cp;
+        });
+        return next;
+      } else {
+        if (prev.length >= 3) {
+          showModal("실전 봇 선택 제한", "실제 거래 담당 봇은 최대 3개까지만 선택할 수 있습니다. 기존에 선택된 봇 하나를 해제한 뒤 선택해주세요.", "warning");
+          return prev;
+        }
+        const next = [...prev, botId];
+        return next;
+      }
+    });
+  };
+
+  // 선택된 실전 봇 균등 배분 (100% N등분)
+  const handleDistributeEvenly = () => {
+    const count = selectedLiveBotIds.length;
+    if (count === 0) return;
+    const base = Math.floor(100 / count);
+    const rem = 100 - base * count;
+    const nextRatios = {};
+    selectedLiveBotIds.forEach((id, idx) => {
+      nextRatios[id] = idx === 0 ? base + rem : base;
+    });
+    setLiveAllocRatios(nextRatios);
+  };
+
+  // 실전 봇 선택 및 동적 투자금 배분 저장 (PUT /api/settings/live-bots)
+  const handleSaveLiveBotsAllocation = async (e) => {
+    if (e) e.preventDefault();
+    if (selectedLiveBotIds.length < 1 || selectedLiveBotIds.length > 3) {
+      showModal("설정 오류", "실제 거래 담당 봇은 1개 ~ 3개 사이로 선택해야 합니다.", "warning");
+      return;
+    }
+    const ratioSum = selectedLiveBotIds.reduce((acc, id) => acc + Number(liveAllocRatios[id] || 0), 0);
+    if (Math.abs(ratioSum - 100) > 0.1) {
+      showModal("비율 설정 오류", `선택된 실전 봇들의 투자 비율 합계는 정확히 100%여야 합니다. (현재 ${ratioSum.toFixed(1)}%)`, "danger");
+      return;
+    }
+    const numericCapital = Math.floor(parseNumericInput(totalCapitalInput));
+    if (!(numericCapital > 0)) {
+      showModal("원금 설정 오류", "총 실전 운용 원금(KRW)을 0원보다 크게 입력해주세요.", "danger");
+      return;
+    }
+
+    setSavingLiveBots(true);
+    try {
+      const payload = {
+        total_capital: numericCapital,
+        selected_bots: selectedLiveBotIds.map((id) => ({
+          bot_id: id,
+          allocation_ratio: Number(((liveAllocRatios[id] || 0) / 100).toFixed(4)),
+        })),
+      };
+      const resp = await fetch(`${API_BASE}/api/settings/live-bots`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        await fetchOverviewAndBots(false, "live");
+        await fetchAlgoLabModels();
+        showModal(
+          "실전 봇 및 투자금 설정 저장 완료",
+          `${data.message}\n총 운용 원금: ${numericCapital.toLocaleString("ko-KR")}원\n선택된 실전 봇: ${data.selected_bots?.map((b) => b.nickname || b.bot_id).join(", ")}`,
+          "success"
+        );
+      } else {
+        showModal("저장 실패", data.detail || data.message || "요청 처리에 실패했습니다.", "danger");
+      }
+    } catch (err) {
+      showModal("통신 오류", `설정 저장 중 오류: ${err.message}`, "danger");
+    } finally {
+      setSavingLiveBots(false);
     }
   };
 
@@ -975,7 +1075,8 @@ export default function App() {
       const resp = await fetch(`${API_BASE}/api/system/overview?mode=${encodeURIComponent(mode)}`);
       if (!resp.ok) return;
       const data = await resp.json();
-      setBots(data.bots || []);
+      const botList = data.bots || [];
+      setBots(botList);
       setTotalCapitalInput(
         data.total_capital !== null && data.total_capital !== undefined && data.total_capital !== 0
           ? data.total_capital
@@ -984,7 +1085,9 @@ export default function App() {
 
       const newRatios = {};
       const newEditForms = {};
-      (data.bots || []).forEach((b) => {
+      const liveIds = [];
+      const liveRats = {};
+      botList.forEach((b) => {
         newRatios[b.bot_id] = b.allocation_ratio ? b.allocation_ratio : "";
         newEditForms[b.bot_id] = {
           nickname: b.nickname || "",
@@ -993,9 +1096,17 @@ export default function App() {
           take_profit_pct: b.take_profit_pct ? b.take_profit_pct : "",
           config: b.config || {},
         };
+        if (Number(b.is_selected_for_live) === 1) {
+          liveIds.push(b.bot_id);
+          liveRats[b.bot_id] = Number(b.allocation_ratio || 0);
+        }
       });
       setRatioInputs(newRatios);
       setBotEditForms(newEditForms);
+      if (liveIds.length > 0) {
+        setSelectedLiveBotIds(liveIds);
+        setLiveAllocRatios(liveRats);
+      }
 
       // 요구사항 21: 설정된 잔고가 0 이하로 떨어져 모든 봇이 거래 중지된 경우 거래현황 진입 시 Modal Popup 표시
       if (data.zero_balance_halted && (triggerZeroModalOnTrades || !zeroBalanceAlerted)) {
@@ -1142,9 +1253,9 @@ export default function App() {
     return () => clearInterval(timer);
   }, [authenticated, selectedBotId, fetchTradeMode, fetchAlgoLabModels, fetchEntryCode]);
 
-  // 알고리즘 검증소 활성화 시 5초 주기 실시간 모델 랭킹 및 체결 일지 자동 갱신
+  // 가상거래 경쟁(Arena) 활성화 시 5초 주기 실시간 리더보드 및 체결 일지 자동 갱신
   useEffect(() => {
-    if (!authenticated || activeMenu !== "algo-lab") return;
+    if (!authenticated || (activeMenu !== "arena" && activeMenu !== "algo-lab")) return;
     fetchAlgoLabModels();
     fetchAlgoLabTrades(selectedAlgoModelId);
 
@@ -1350,26 +1461,26 @@ export default function App() {
 
   // 메뉴 전환 시 처리 (거래현황 진입 시 잔고 0 이하 여부 즉시 체크하여 모달 표기)
   const handleMenuChange = (menuKey) => {
-    setActiveMenu(menuKey);
-    sessionStorage.setItem("autoCoinTrade_menu", menuKey);
-    localStorage.setItem("autoCoinTrade_menu", menuKey);
-    if (menuKey === "trades") {
-      fetchOverviewAndBots(true);
+    const targetKey = menuKey === "algo-lab" ? "arena" : menuKey;
+    setActiveMenu(targetKey);
+    sessionStorage.setItem("autoCoinTrade_menu", targetKey);
+    localStorage.setItem("autoCoinTrade_menu", targetKey);
+    if (targetKey === "trades") {
+      fetchOverviewAndBots(true, "live");
       fetchUpbitAccount();
-      fetchTrades(selectedBotId);
-      fetchTradeMode();
-    } else if (menuKey === "stats") {
-      fetchStatistics();
-    } else if (menuKey === "algo-lab") {
+      fetchTrades(selectedBotId, "live");
+    } else if (targetKey === "arena") {
       fetchAlgoLabModels();
       fetchAlgoLabTrades(selectedAlgoModelId);
-    } else if (menuKey === "news") {
+    } else if (targetKey === "stats") {
+      fetchStatistics(statsModeTab);
+    } else if (targetKey === "news") {
       fetchNews(1);
       fetchNewsAiBriefing();
-    } else if (menuKey === "settings") {
-      fetchOverviewAndBots(false);
+    } else if (targetKey === "settings") {
+      fetchOverviewAndBots(false, "live");
       fetchUpbitAccount();
-      fetchTradeMode();
+      fetchAlgoLabModels();
     }
   };
 
@@ -1741,9 +1852,18 @@ export default function App() {
           <button
             className={`menu-btn ${activeMenu === "trades" ? "active" : ""}`}
             onClick={() => handleMenuChange("trades")}
+            title="내가 선택한 1~3개 실전 담당 봇 전용 제어 및 업비트 실계좌 체결 현황"
           >
-            <span>📊</span>
-            <span>거래현황</span>
+            <span>⚡</span>
+            <span>실제거래 현황</span>
+          </button>
+          <button
+            className={`menu-btn ${activeMenu === "arena" || activeMenu === "algo-lab" ? "active" : ""}`}
+            onClick={() => handleMenuChange("arena")}
+            title="10개 봇 상시 무중단 거래 및 순수 알고리즘 수익률 리더보드"
+          >
+            <span>🏆</span>
+            <span>가상거래 경쟁</span>
           </button>
           <button
             className={`menu-btn ${activeMenu === "stats" ? "active" : ""}`}
@@ -1751,13 +1871,6 @@ export default function App() {
           >
             <span>📈</span>
             <span>통계</span>
-          </button>
-          <button
-            className={`menu-btn ${activeMenu === "algo-lab" ? "active" : ""}`}
-            onClick={() => handleMenuChange("algo-lab")}
-          >
-            <span>🧪</span>
-            <span>검증소</span>
           </button>
           <button
             className={`menu-btn ${activeMenu === "news" ? "active" : ""}`}
@@ -1769,6 +1882,7 @@ export default function App() {
           <button
             className={`menu-btn ${activeMenu === "settings" ? "active" : ""}`}
             onClick={() => handleMenuChange("settings")}
+            title="실전 담당 봇 1~3개 선택 및 동적 투자금 비율 설정 패널"
           >
             <span>⚙️</span>
             <span>설정</span>
@@ -1804,9 +1918,24 @@ export default function App() {
           <div>
             <div className="page-header">
               <div>
-                <h2 className="page-title">거래현황</h2>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <h2 className="page-title">⚡ 실제거래 현황</h2>
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      padding: "3px 10px",
+                      borderRadius: "12px",
+                      background: "rgba(239, 68, 68, 0.2)",
+                      color: "#fca5a5",
+                      border: "1px solid rgba(239, 68, 68, 0.4)",
+                      fontWeight: 700,
+                    }}
+                  >
+                    실계좌 연동 · 실전 전용
+                  </span>
+                </div>
                 <p className="page-desc">
-                  봇별 탭으로 거래 내역을 확인하고 수동으로 거래 시작 및 중단을 제어합니다.
+                  설정에서 선택된 1~3개의 실전 담당 봇만 노출되며, 실제 업비트 계좌의 자금과 연동되어 안전하게 매매를 수행합니다.
                 </p>
               </div>
             </div>
@@ -2369,25 +2498,77 @@ export default function App() {
               )}
             </div>
 
-            {/* 봇별 탭 구분 (요구사항 9, 15: 봇 별명 표기) */}
-            <div className="tab-bar">
-              {bots.map((bot) => (
-                <button
-                  key={bot.bot_id}
-                  className={`tab-btn ${selectedBotId === bot.bot_id ? "active" : ""}`}
-                  onClick={() => {
-                    setSelectedBotId(bot.bot_id);
-                    fetchTrades(bot.bot_id);
-                  }}
-                >
-                  <span
-                    className={`status-dot ${bot.is_running ? "green" : "red"}`}
-                    style={{ width: "8px", height: "8px" }}
-                  />
-                  <span>{bot.nickname || bot.name}</span>
-                </button>
-              ))}
-            </div>
+            {/* 실전 담당 봇 탭 구분 (선택된 1~3개 실전 봇만 동적 노출) */}
+            {(() => {
+              const liveBots = bots.filter((b) => Number(b.is_selected_for_live) === 1);
+              if (liveBots.length === 0) {
+                return (
+                  <div
+                    className="card"
+                    style={{
+                      padding: "16px 20px",
+                      marginBottom: "16px",
+                      background: "rgba(239, 68, 68, 0.1)",
+                      border: "1px dashed rgba(239, 68, 68, 0.4)",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: "10px",
+                    }}
+                  >
+                    <div>
+                      <strong style={{ color: "#fca5a5" }}>⚡ 현재 실제 거래를 담당하는 실전 봇이 선택되지 않았습니다.</strong>
+                      <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "3px" }}>
+                        설정 화면에서 실제 거래를 담당할 봇(1~3개)을 선택하고 운용 원금을 배분해주세요.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => handleMenuChange("settings")}
+                      style={{ padding: "8px 14px", fontSize: "12.5px" }}
+                    >
+                      ⚙️ 설정으로 이동하여 실전 봇 선택하기
+                    </button>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="tab-bar">
+                  {liveBots.map((bot) => (
+                    <button
+                      key={bot.bot_id}
+                      className={`tab-btn ${selectedBotId === bot.bot_id ? "active" : ""}`}
+                      onClick={() => {
+                        setSelectedBotId(bot.bot_id);
+                        fetchTrades(bot.bot_id, "live");
+                      }}
+                    >
+                      <span
+                        className={`status-dot ${bot.is_running ? "green" : "red"}`}
+                        style={{ width: "8px", height: "8px" }}
+                      />
+                      <span>{bot.nickname || bot.name}</span>
+                      <span
+                        style={{
+                          fontSize: "10.5px",
+                          marginLeft: "6px",
+                          padding: "1px 6px",
+                          borderRadius: "8px",
+                          background: "rgba(239, 68, 68, 0.25)",
+                          color: "#fca5a5",
+                          fontWeight: 700,
+                        }}
+                      >
+                        실전 {bot.allocation_ratio}%
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
 
             {/* 선택된 봇 상태 및 거래시작 / 중단 버튼 (요구사항 20) */}
             {currentBot && (
@@ -2569,83 +2750,73 @@ export default function App() {
           <div>
             <div className="page-header">
               <div>
-                <h2 className="page-title">통계</h2>
+                <h2 className="page-title">📈 통계</h2>
                 <p className="page-desc">
-                  통계 시작일({stats.start_date}) 기준 일간/주간/월간 차익 선 그래프 및 다빈도 거래 코인 누적 손익입니다.
+                  통계 시작일({stats.start_date || "2026.10.01"}) 기준 차익 선 그래프 및 다빈도 거래 코인 / 봇별 누적 실현손익입니다.
                 </p>
+              </div>
+
+              {/* 통계 모드 탭 (실제거래 통계 ↔ 가상거래 10대 봇 통계) */}
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
+                <button
+                  type="button"
+                  className={`btn ${statsModeTab === "live" ? "btn-primary" : "btn-secondary"}`}
+                  onClick={() => {
+                    setStatsModeTab("live");
+                    fetchStatistics("live");
+                  }}
+                  style={{ padding: "8px 14px", fontSize: "12.5px" }}
+                >
+                  ⚡ 실제거래 통계
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${statsModeTab === "paper" ? "btn-primary" : "btn-secondary"}`}
+                  onClick={() => {
+                    setStatsModeTab("paper");
+                    fetchStatistics("paper");
+                  }}
+                  style={{ padding: "8px 14px", fontSize: "12.5px" }}
+                >
+                  🏆 가상거래 10대 봇 통계
+                </button>
               </div>
             </div>
 
-            {/* 가상거래 / 실거래 모드 통계 안내 카드 */}
+            {/* 통계 모드 안내 배너 */}
             <div
               className="card"
               style={{
                 marginBottom: "16px",
                 padding: "12px 18px",
+                background:
+                  statsModeTab === "live"
+                    ? "linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(69, 10, 10, 0.25) 100%)"
+                    : "linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(6, 78, 59, 0.25) 100%)",
+                borderColor: statsModeTab === "live" ? "rgba(239, 68, 68, 0.45)" : "rgba(16, 185, 129, 0.45)",
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
                 flexWrap: "wrap",
                 gap: "10px",
-                background:
-                  tradeMode.mode === "paper"
-                    ? "linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(30, 27, 75, 0.35) 100%)"
-                    : "linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(69, 10, 10, 0.25) 100%)",
-                borderColor: tradeMode.mode === "paper" ? "rgba(99, 102, 241, 0.45)" : "rgba(239, 68, 68, 0.45)",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                <span style={{ fontSize: "22px" }}>{tradeMode.mode === "paper" ? "🧪" : "⚡"}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "20px" }}>{statsModeTab === "live" ? "⚡" : "🏆"}</span>
                 <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <strong style={{ fontSize: "15px", color: tradeMode.mode === "paper" ? "#c7d2fe" : "#fca5a5" }}>
-                      {tradeMode.mode === "paper" ? "현재 [가상거래 모의투자] 통계 집계 중" : "현재 [업비트 실거래] 통계 집계 중"}
-                    </strong>
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        padding: "2px 8px",
-                        borderRadius: "10px",
-                        fontWeight: 700,
-                        background: tradeMode.mode === "paper" ? "#4338ca" : "#b91c1c",
-                        color: "#ffffff",
-                      }}
-                    >
-                      {tradeMode.mode === "paper" ? "PAPER STATS" : "LIVE STATS"}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "3px" }}>
-                    {tradeMode.mode === "paper"
-                      ? "실거래와 분리된 가상 원장(paper_trades)의 통계입니다. 실거래 누적 손익을 보시려면 우측 버튼을 눌러 실거래 모드로 전환하세요."
-                      : "업비트 실거래 원장(trades)의 누적 실현손익 및 코인별 손익 기여도 통계입니다."}
+                  <strong style={{ color: statsModeTab === "live" ? "#fca5a5" : "#6ee7b7" }}>
+                    {statsModeTab === "live" ? "현재 [실제거래(Live)] 통계 집계 중" : "현재 [가상거래 10대 봇(Arena)] 통계 집계 중"}
+                  </strong>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px" }}>
+                    {statsModeTab === "live"
+                      ? "업비트 실거래 원장(trades)의 체결 내역을 바탕으로 산출된 실계좌 통계입니다."
+                      : "가상거래 전용 원장(paper_trades)에 기록된 10대 알고리즘 모의 체결 통계입니다."}
                   </div>
                 </div>
               </div>
-
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => handleToggleTradeMode()}
-                  disabled={tradeMode.loading}
-                  style={{
-                    padding: "8px 14px",
-                    fontSize: "13px",
-                    borderColor: tradeMode.mode === "paper" ? "#ef4444" : "#6366f1",
-                    color: tradeMode.mode === "paper" ? "#fca5a5" : "#c7d2fe",
-                  }}
-                  title="실거래 통계와 가상거래 통계를 전환합니다."
-                >
-                  {tradeMode.loading
-                    ? "전환 중..."
-                    : tradeMode.mode === "paper"
-                    ? "⚡ 실거래 통계 보기 (모드 전환)"
-                    : "🧪 가상거래 통계 보기 (모드 전환)"}
-                </button>
-              </div>
             </div>
 
-            {/* 요구사항 10: 일간 / 주간 / 월간 탭 구성 */}
+            {/* 일간 / 주간 / 월간 탭 */}
             <div className="tab-bar">
               <button
                 className={`tab-btn ${statsPeriodTab === "daily" ? "active" : ""}`}
@@ -2667,7 +2838,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* 요구사항 10, 11: 2026.10.01부터 차익 이력 선 그래프 */}
+            {/* 차익 추이 선 그래프 */}
             <div className="card">
               <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>
                 {periodLabel} 차익 추이 선 그래프 (시작일: 2026.10.01)
@@ -2675,8 +2846,8 @@ export default function App() {
               <ProfitLineChart series={chartSeries} periodLabel={periodLabel} />
             </div>
 
-            {/* 요구사항 12: 그래프 하단 가장 많이 거래된 코인 순 게시판 + 주간/월간/연간 누적 손익 색상 구분 (이익:빨간색, 손해:파란색, 그외:검은색) */}
-            <div className="card">
+            {/* 코인별 누적 손익 순위 게시판 */}
+            <div className="card" style={{ marginBottom: "20px" }}>
               <div
                 style={{
                   display: "flex",
@@ -2687,13 +2858,13 @@ export default function App() {
                   gap: "8px",
                 }}
               >
-                <h3 style={{ fontSize: "16px", fontWeight: 700 }}>
+                <h3 style={{ fontSize: "16px", fontWeight: 700, margin: 0 }}>
                   다빈도 거래 코인 순위 및 기간별 누적 손익
                 </h3>
-                <div style={{ fontSize: "12.5px", display: "flex", gap: "14px" }}>
+                <div style={{ fontSize: "12px", display: "flex", gap: "12px" }}>
                   <span className="pnl-profit">● 이익: 빨간색</span>
                   <span className="pnl-loss">● 손해: 파란색</span>
-                  <span className="pnl-Zero">● 그 외(0원): 검은색</span>
+                  <span className="pnl-Zero">● 그 외(0원): 검은색/회색</span>
                 </div>
               </div>
 
@@ -2701,7 +2872,7 @@ export default function App() {
                 <table className="board-table">
                   <thead>
                     <tr>
-                      <th>순위</th>
+                      <th style={{ width: "60px" }}>순위</th>
                       <th>코인(마켓)</th>
                       <th>총 거래 횟수</th>
                       <th>주간 누적 손익</th>
@@ -2710,7 +2881,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(!stats.coin_ranking || stats.coin_ranking.length === 0) ? (
+                    {!stats.coin_ranking || stats.coin_ranking.length === 0 ? (
                       <tr>
                         <td colSpan={6} style={{ textAlign: "center", padding: "28px", color: "#94a3b8" }}>
                           집계된 코인 거래 통계가 없습니다.
@@ -2737,45 +2908,78 @@ export default function App() {
                 </table>
               </div>
             </div>
+
+            {/* 봇별 실현손익 기여도 순위 (신규 추가) */}
+            {Array.isArray(stats.bot_ranking) && stats.bot_ranking.length > 0 && (
+              <div className="card">
+                <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>
+                  봇별 실현손익 기여도 및 승률 순위
+                </h3>
+                <div className="table-container">
+                  <table className="board-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: "60px" }}>순위</th>
+                        <th>알고리즘 봇</th>
+                        <th>총 체결 수</th>
+                        <th>승리 / 패배</th>
+                        <th>승률</th>
+                        <th>총 실현 손익</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stats.bot_ranking.map((b, idx) => (
+                        <tr key={b.bot_id}>
+                          <td style={{ fontWeight: 700 }}>{idx + 1}위</td>
+                          <td style={{ fontWeight: 700, color: "#f8fafc" }}>
+                            {b.nickname || b.bot_id}
+                          </td>
+                          <td>{b.completed_count}건</td>
+                          <td>
+                            {b.win_count}승 {b.lose_count}패
+                          </td>
+                          <td style={{ fontWeight: 700 }}>{b.win_rate_pct}%</td>
+                          <td>{renderColoredProfit(b.total_profit)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* ============================================================
-            [메뉴 3] 알고리즘 검증소 (Algorithm Validation Lab / Testbed)
-            - 실제 업비트 실시간 호가/시세 기반 6개 퀀트 전략 모델 실시간 경쟁 및 랭킹
-            - 1위~3위 포디움 하이라이트
-            - 실시간 수익률 및 총 평가자산 랭킹 테이블
-            - 모델별 가상 체결 및 상세 매매 일지
-           ============================================================ */}
-        {activeMenu === "algo-lab" && (
+        {(activeMenu === "arena" || activeMenu === "algo-lab") && (
           <div>
+            {/* 페이지 상단 헤더 */}
             <div className="page-header">
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                  <h2 className="page-title">알고리즘 검증소 (Algorithm Lab)</h2>
+                  <h2 className="page-title">🏆 가상거래 경쟁 (Always-On Arena)</h2>
                   <span
                     style={{
                       fontSize: "12px",
                       padding: "3px 10px",
                       borderRadius: "12px",
-                      background: "rgba(99, 102, 241, 0.2)",
-                      color: "#a5b4fc",
-                      border: "1px solid rgba(99, 102, 241, 0.4)",
+                      background: "rgba(16, 185, 129, 0.2)",
+                      color: "#34d399",
+                      border: "1px solid rgba(16, 185, 129, 0.4)",
                       fontWeight: 700,
                     }}
                   >
-                    ⚡ 실시간 가상 검증 랭킹
+                    24시간 무중단 상시 가상 시뮬레이션
                   </span>
                 </div>
                 <p className="page-desc">
-                  실제 업비트 실시간 호가 및 캔들 데이터를 바탕으로 6개 퀀트 전략 모델이 가상 자본으로 매매 경쟁을 펼치며, 실시간 수익률 랭킹을 산출합니다.
+                  수익률이 검증된 10대 코인 알고리즘 봇이 24시간 실시간 업비트 시세를 바탕으로 무중단 가상 경쟁을 펼치며, 실시간 수익률 리더보드를 산출합니다.
                 </p>
               </div>
 
-              {/* 검증소 우측 액션 버튼들 */}
+              {/* 우측 액션 버튼 */}
               <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
                 <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-                  최근 갱신: {algoLabLastUpdated || "-"} (10초 자동)
+                  최근 갱신: {algoLabLastUpdated || "-"} (9초 상시)
                 </span>
                 <button
                   type="button"
@@ -2785,7 +2989,7 @@ export default function App() {
                   style={{ padding: "8px 14px", fontSize: "12.5px", display: "inline-flex", alignItems: "center", gap: "6px" }}
                 >
                   <span>{algoLabCycleRunning ? "⏳" : "🔄"}</span>
-                  <span>{algoLabCycleRunning ? "시뮬레이션 중..." : "실시간 검증 실행"}</span>
+                  <span>{algoLabCycleRunning ? "시뮬레이션 중..." : "즉시 시뮬레이션 1사이클"}</span>
                 </button>
                 <button
                   type="button"
@@ -2793,14 +2997,36 @@ export default function App() {
                   onClick={handleResetAlgoLab}
                   disabled={algoLabLoading}
                   style={{ padding: "8px 14px", fontSize: "12.5px" }}
+                  title="가상거래 전용 원장(paper_trades)과 10대 봇 가상 잔고를 1,000만 원으로 리셋합니다."
                 >
-                  초기화 (100만원 리셋)
+                  초기화 (가상거래 리셋)
                 </button>
               </div>
             </div>
 
-            {/* TOP 3 랭킹 포디움 (Gold 🥇 / Silver 🥈 / Bronze 🥉) */}
-            <div className="podium-grid">
+            {/* Always-On 상시 가동 상태 배너 */}
+            <div className="arena-status-banner">
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <span className="arena-pulse-badge">
+                  <span className="arena-pulse-dot" />
+                  🟢 상시 가상 시뮬레이션 가동 중 (LLM 필터 제외 · 100% 순수 알고리즘 실시간 경쟁)
+                </span>
+                <span style={{ fontSize: "12px", color: "#94a3b8" }}>
+                  * 시작/중지 버튼 없이 10개 봇이 상시 경쟁하며, 수익률 상위 봇을 설정 메뉴에서 선택하여 실전 매매에 즉시 투입할 수 있습니다.
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => handleMenuChange("settings")}
+                style={{ padding: "6px 14px", fontSize: "12px", borderColor: "rgba(99, 102, 241, 0.4)", color: "#c7d2fe" }}
+              >
+                ⚙️ 실전 담당 봇 선택 및 투자금 배분 설정 →
+              </button>
+            </div>
+
+            {/* TOP 3 랭킹 포디움 (Gold 🥇 1위, Silver 🥈 2위, Bronze 🥉 3위) */}
+            <div className="podium-container">
               {algoModels.slice(0, 3).map((m, idx) => {
                 const rankNum = idx + 1;
                 const isFirst = rankNum === 1;
@@ -2809,63 +3035,103 @@ export default function App() {
                 const profitRate = Number(m.profit_rate_pct || 0);
 
                 return (
-                  <div key={m.model_id} className={`podium-card ${badgeClass}`}>
+                  <div key={m.bot_id || m.model_id} className={`podium-card ${badgeClass}`}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                      <span className={`podium-badge ${badgeClass}`}>{medalIcon}</span>
-                      <span style={{ fontSize: "11px", color: "#94a3b8", background: "rgba(0,0,0,0.3)", padding: "2px 6px", borderRadius: "4px" }}>
-                        {m.category}
-                      </span>
+                      <span style={{ fontSize: "15px", fontWeight: 800 }}>{medalIcon}</span>
+                      {Number(m.is_selected_for_live) === 1 && (
+                        <span className="badge-live-selected">⚡ 실전 담당 중</span>
+                      )}
                     </div>
 
-                    <div style={{ fontSize: "16px", fontWeight: 800, color: "#f8fafc", marginBottom: "6px" }}>
-                      {m.name}
+                    <div style={{ fontSize: "17px", fontWeight: 800, color: "#f8fafc", marginBottom: "4px" }}>
+                      {m.nickname || m.name}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "14px", minHeight: "34px", lineHeight: "1.4" }}>
+                      {m.description}
                     </div>
 
-                    <div style={{ display: "flex", alignItems: "baseline", gap: "8px", marginBottom: "12px" }}>
-                      <span
-                        style={{
-                          fontSize: "22px",
-                          fontWeight: 800,
-                          color: profitRate > 0 ? "var(--profit-red)" : profitRate < 0 ? "var(--loss-blue)" : "#94a3b8",
-                        }}
-                      >
-                        {profitRate > 0 ? "+" : ""}{profitRate.toFixed(2)}%
-                      </span>
-                      <span style={{ fontSize: "13px", color: "#cbd5e1" }}>
-                        ({Number(m.cumulative_profit_krw || 0) > 0 ? "+" : ""}
-                        {Math.floor(Number(m.cumulative_profit_krw || 0)).toLocaleString("ko-KR")}원)
-                      </span>
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", fontSize: "12px", background: "rgba(0,0,0,0.25)", padding: "8px 10px", borderRadius: "8px" }}>
-                      <div>
-                        <span style={{ color: "#94a3b8" }}>총 평가자산: </span>
-                        <strong style={{ color: "#f1f5f9" }}>{Math.floor(Number(m.eval_assets_krw || 0)).toLocaleString("ko-KR")}원</strong>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "auto" }}>
+                      <div className="meta-item">
+                        <span className="meta-label">실시간 누적 수익률</span>
+                        <span
+                          className="meta-value"
+                          style={{
+                            fontSize: "20px",
+                            fontWeight: 800,
+                            color: profitRate > 0 ? "#ef4444" : profitRate < 0 ? "#3b82f6" : "#f8fafc",
+                          }}
+                        >
+                          {profitRate > 0 ? `+${profitRate}%` : `${profitRate}%`}
+                        </span>
                       </div>
-                      <div>
-                        <span style={{ color: "#94a3b8" }}>승률: </span>
-                        <strong style={{ color: Number(m.win_rate_pct || 0) >= 50 ? "#4ade80" : "#f87171" }}>
-                          {m.win_rate_pct}% ({m.win_trades}승 {m.lose_trades}패)
-                        </strong>
+                      <div className="meta-item">
+                        <span className="meta-label">총 평가자산</span>
+                        <span className="meta-value" style={{ fontSize: "15px", fontWeight: 700 }}>
+                          {formatKRW(m.eval_assets_krw)}
+                        </span>
                       </div>
-                    </div>
-
-                    <div style={{ marginTop: "10px", fontSize: "11.5px", color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      💡 {m.last_signal_text}
+                      <div className="meta-item">
+                        <span className="meta-label">실현손익 (전적)</span>
+                        <span className="meta-value" style={{ fontSize: "13px" }}>
+                          {renderColoredProfit(m.realized_profit_krw || m.cumulative_profit_krw)}{" "}
+                          <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                            ({m.win_trades || 0}승 {m.lose_trades || 0}패)
+                          </span>
+                        </span>
+                      </div>
+                      <div className="meta-item">
+                        <span className="meta-label">승률 / MDD</span>
+                        <span className="meta-value" style={{ fontSize: "13px", color: "#cbd5e1" }}>
+                          {m.win_rate_pct || 0}% / <span style={{ color: "#f87171" }}>-{m.mdd_pct || 0}%</span>
+                        </span>
+                      </div>
                     </div>
                   </div>
                 );
               })}
             </div>
 
-            {/* 실시간 알고리즘 랭킹 테이블 카드 */}
+            {/* 10대 알고리즘 실시간 수익률 랭킹 보드 (1위 ~ 10위 전체 리더보드) */}
             <div className="card" style={{ marginBottom: "20px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "8px" }}>
-                <h3 style={{ fontSize: "16px", fontWeight: 700 }}>
-                  실시간 알고리즘 수익률 랭킹 보드 (전체 6개 모델)
-                </h3>
-                <div style={{ fontSize: "12px", color: "#94a3b8" }}>
-                  * 실제 업비트 실시간 호가/시세로 10초마다 자동 평가 및 순위가 갱신됩니다.
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "14px",
+                  flexWrap: "wrap",
+                  gap: "8px",
+                }}
+              >
+                <div>
+                  <h3 style={{ fontSize: "16px", fontWeight: 700, margin: 0 }}>
+                    10대 알고리즘 실시간 수익률 랭킹 보드 (순수 수식/기술지표 기반)
+                  </h3>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "3px" }}>
+                    * 행을 클릭하면 하단에 해당 봇의 가상 체결 이력만 필터링되어 표시됩니다.
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <button
+                    type="button"
+                    className={`btn ${selectedAlgoModelId === "all" ? "btn-primary" : "btn-secondary"}`}
+                    onClick={() => {
+                      setSelectedAlgoModelId("all");
+                      fetchAlgoLabTrades("all");
+                    }}
+                    style={{ padding: "5px 12px", fontSize: "12px" }}
+                  >
+                    전체 봇 체결 보기
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => handleMenuChange("settings")}
+                    style={{ padding: "5px 12px", fontSize: "12px", borderColor: "#6366f1", color: "#a5b4fc" }}
+                  >
+                    ⚙️ 실전 봇 선택하러 가기
+                  </button>
                 </div>
               </div>
 
@@ -2873,137 +3139,102 @@ export default function App() {
                 <table className="board-table">
                   <thead>
                     <tr>
-                      <th style={{ width: "65px", textAlign: "center" }}>순위</th>
-                      <th>알고리즘 모델명</th>
-                      <th style={{ width: "95px" }}>전략 분류</th>
-                      <th style={{ textAlign: "right", width: "130px" }}>실시간 수익률</th>
-                      <th style={{ textAlign: "right", width: "120px" }}>총 평가자산</th>
-                      <th style={{ textAlign: "right", width: "110px" }}>가용 현금</th>
-                      <th style={{ textAlign: "center", width: "120px" }}>승률 (전적)</th>
-                      <th style={{ width: "150px" }}>보유 포지션</th>
-                      <th style={{ width: "100px", textAlign: "center" }}>상세 검증</th>
+                      <th style={{ width: "70px", textAlign: "center" }}>순위</th>
+                      <th>봇 별명 / 알고리즘명</th>
+                      <th style={{ textAlign: "right" }}>누적 수익률</th>
+                      <th style={{ textAlign: "right" }}>총 평가자산</th>
+                      <th style={{ textAlign: "right" }}>실현손익</th>
+                      <th style={{ textAlign: "center" }}>승률 (전적)</th>
+                      <th style={{ textAlign: "center" }}>MDD</th>
+                      <th style={{ textAlign: "center" }}>보유 포지션</th>
+                      <th style={{ textAlign: "center" }}>실전 담당</th>
+                      <th>최근 시그널 상태</th>
                     </tr>
                   </thead>
                   <tbody>
                     {algoModels.length === 0 ? (
                       <tr>
-                        <td colSpan={9} style={{ textAlign: "center", padding: "32px", color: "var(--text-secondary)" }}>
-                          알고리즘 모델 데이터를 불러오는 중입니다...
+                        <td colSpan={10} style={{ textAlign: "center", padding: "32px", color: "#94a3b8" }}>
+                          가상 경쟁 리더보드 데이터를 집계하는 중입니다...
                         </td>
                       </tr>
                     ) : (
                       algoModels.map((m) => {
+                        const isSelected = selectedAlgoModelId === m.bot_id;
                         const profitRate = Number(m.profit_rate_pct || 0);
-                        const cumProfit = Number(m.cumulative_profit_krw || 0);
-                        const isRank1 = m.current_rank === 1;
-                        const isRank2 = m.current_rank === 2;
-                        const isRank3 = m.current_rank === 3;
+                        const isLiveSelected = Number(m.is_selected_for_live) === 1;
 
                         return (
                           <tr
-                            key={m.model_id}
-                            style={{
-                              background: isRank1 ? "rgba(234, 179, 8, 0.08)" : undefined,
-                              cursor: "pointer",
-                            }}
+                            key={m.bot_id}
                             onClick={() => {
-                              setSelectedAlgoModelId(m.model_id);
-                              fetchAlgoLabTrades(m.model_id);
+                              setSelectedAlgoModelId(m.bot_id);
+                              fetchAlgoLabTrades(m.bot_id);
+                            }}
+                            style={{
+                              cursor: "pointer",
+                              background: isSelected ? "rgba(99, 102, 241, 0.12)" : "transparent",
                             }}
                           >
-                            <td style={{ textAlign: "center", fontWeight: 800, fontSize: "15px" }}>
-                              {isRank1 ? "🥇 1위" : isRank2 ? "🥈 2위" : isRank3 ? "🥉 3위" : `${m.current_rank}위`}
+                            <td style={{ textAlign: "center", fontWeight: 800 }}>
+                              {m.rank === 1 ? "🥇 1위" : m.rank === 2 ? "🥈 2위" : m.rank === 3 ? "🥉 3위" : `${m.rank}위`}
                             </td>
                             <td>
-                              <div style={{ fontWeight: 700, color: "#f8fafc" }}>{m.name}</div>
-                              <div style={{ fontSize: "11.5px", color: "#94a3b8", marginTop: "2px" }}>
-                                {m.last_signal_text}
+                              <div style={{ fontWeight: 700, fontSize: "14px", color: "#f8fafc" }}>
+                                {m.nickname || m.name}
                               </div>
+                              <div style={{ fontSize: "11.5px", color: "#94a3b8" }}>{m.name}</div>
                             </td>
-                            <td>
-                              <span
-                                style={{
-                                  fontSize: "11px",
-                                  padding: "2px 8px",
-                                  borderRadius: "10px",
-                                  background: "rgba(99, 102, 241, 0.15)",
-                                  color: "#a5b4fc",
-                                  border: "1px solid rgba(99, 102, 241, 0.3)",
-                                }}
-                              >
-                                {m.category}
-                              </span>
+                            <td
+                              style={{
+                                textAlign: "right",
+                                fontWeight: 800,
+                                fontSize: "15px",
+                                color: profitRate > 0 ? "#ef4444" : profitRate < 0 ? "#3b82f6" : "#f8fafc",
+                              }}
+                            >
+                              {profitRate > 0 ? `+${profitRate}%` : `${profitRate}%`}
+                            </td>
+                            <td style={{ textAlign: "right", fontWeight: 700 }}>
+                              {formatKRW(m.eval_assets_krw)}
                             </td>
                             <td style={{ textAlign: "right" }}>
-                              <div
-                                style={{
-                                  fontWeight: 800,
-                                  fontSize: "14.5px",
-                                  color: profitRate > 0 ? "var(--profit-red)" : profitRate < 0 ? "var(--loss-blue)" : "#94a3b8",
-                                }}
-                              >
-                                {profitRate > 0 ? "+" : ""}{profitRate.toFixed(2)}%
-                              </div>
-                              <div style={{ fontSize: "11.5px", color: "#94a3b8" }}>
-                                ({cumProfit > 0 ? "+" : ""}{cumProfit.toLocaleString("ko-KR")}원)
-                              </div>
+                              {renderColoredProfit(m.realized_profit_krw || m.cumulative_profit_krw)}
                             </td>
-                            <td style={{ textAlign: "right", fontWeight: 700, color: "#f1f5f9" }}>
-                              {Math.floor(Number(m.eval_assets_krw || 0)).toLocaleString("ko-KR")}원
+                            <td style={{ textAlign: "center" }}>
+                              <span style={{ fontWeight: 600 }}>{m.win_rate_pct || 0}%</span>{" "}
+                              <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                ({m.win_trades || 0}승 {m.lose_trades || 0}패)
+                              </span>
                             </td>
-                            <td style={{ textAlign: "right", color: "#cbd5e1" }}>
-                              {Math.floor(Number(m.cash_krw || 0)).toLocaleString("ko-KR")}원
+                            <td style={{ textAlign: "center", color: "#f87171", fontWeight: 600 }}>
+                              -{m.mdd_pct || 0}%
                             </td>
                             <td style={{ textAlign: "center" }}>
                               <span
                                 style={{
+                                  padding: "2px 8px",
+                                  borderRadius: "10px",
+                                  fontSize: "12px",
                                   fontWeight: 700,
-                                  color: Number(m.win_rate_pct || 0) >= 50 ? "#4ade80" : "#f87171",
+                                  background: (m.open_positions_count || 0) > 0 ? "rgba(56, 189, 248, 0.2)" : "rgba(148, 163, 184, 0.1)",
+                                  color: (m.open_positions_count || 0) > 0 ? "#38bdf8" : "#94a3b8",
                                 }}
                               >
-                                {m.win_rate_pct}%
+                                {m.open_positions_count || 0}건
                               </span>
-                              <div style={{ fontSize: "11px", color: "#94a3b8" }}>
-                                ({m.win_trades}승 {m.lose_trades}패 / {m.total_trades}회)
-                              </div>
-                            </td>
-                            <td>
-                              {(m.open_positions || []).length === 0 ? (
-                                <span style={{ fontSize: "12px", color: "#64748b" }}>보유 없음 (현금 100%)</span>
-                              ) : (
-                                (m.open_positions || []).map((p) => (
-                                  <div
-                                    key={p.id}
-                                    style={{
-                                      fontSize: "11.5px",
-                                      background: "rgba(30, 41, 59, 0.8)",
-                                      border: "1px solid #334155",
-                                      borderRadius: "6px",
-                                      padding: "2px 6px",
-                                      marginBottom: "3px",
-                                    }}
-                                  >
-                                    <strong style={{ color: "#38bdf8" }}>{p.market}</strong>{" "}
-                                    <span style={{ color: "#94a3b8" }}>
-                                      {Number(p.avg_buy_price).toLocaleString()}원
-                                    </span>
-                                  </div>
-                                ))
-                              )}
                             </td>
                             <td style={{ textAlign: "center" }}>
-                              <button
-                                type="button"
-                                className="btn btn-outline"
-                                style={{ padding: "4px 10px", fontSize: "11.5px" }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedAlgoModelId(m.model_id);
-                                  fetchAlgoLabTrades(m.model_id);
-                                }}
-                              >
-                                상세
-                              </button>
+                              {isLiveSelected ? (
+                                <span className="badge-live-selected">⚡ 실전</span>
+                              ) : (
+                                <span style={{ fontSize: "12px", color: "#64748b" }}>가상</span>
+                              )}
+                            </td>
+                            <td>
+                              <span style={{ fontSize: "12.5px", color: "#cbd5e1" }}>
+                                {m.last_signal_text}
+                              </span>
                             </td>
                           </tr>
                         );
@@ -3014,111 +3245,105 @@ export default function App() {
               </div>
             </div>
 
-            {/* 모델별 가상 매매 체결 이력 카드 */}
+            {/* 하단: 가상 매매 체결 일지 (paper_trades) */}
             <div className="card">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "8px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "14px",
+                  flexWrap: "wrap",
+                  gap: "8px",
+                }}
+              >
                 <div>
-                  <h3 style={{ fontSize: "16px", fontWeight: 700 }}>
-                    가상 매매 체결 일지 (
-                    {selectedAlgoModelId === "all"
-                      ? "전체 모델"
-                      : algoModels.find((m) => m.model_id === selectedAlgoModelId)?.name || selectedAlgoModelId}
-                    )
+                  <h3 style={{ fontSize: "16px", fontWeight: 700, margin: 0 }}>
+                    실시간 가상 매매 체결 이력{" "}
+                    {selectedAlgoModelId !== "all" && (
+                      <span style={{ color: "#a5b4fc", fontSize: "14px" }}>
+                        ({algoModels.find((m) => m.bot_id === selectedAlgoModelId)?.nickname || selectedAlgoModelId})
+                      </span>
+                    )}
                   </h3>
-                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                    실제 실시간 시세와 호가 지표를 기반으로 가상 매수/매도 및 수수료(0.05%)가 정밀 차감 체결된 내역입니다.
-                  </p>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px" }}>
+                    실거래와 분리된 전용 가상 원장(paper_trades)에 기록된 모의 체결 내역입니다. (수수료 0.05% 반영)
+                  </div>
                 </div>
 
-                {/* 모델 필터 탭 */}
-                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {selectedAlgoModelId !== "all" && (
                   <button
                     type="button"
-                    className={`tab-btn ${selectedAlgoModelId === "all" ? "active" : ""}`}
-                    style={{ padding: "6px 12px", fontSize: "12px" }}
+                    className="btn btn-secondary"
                     onClick={() => {
                       setSelectedAlgoModelId("all");
                       fetchAlgoLabTrades("all");
                     }}
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
                   >
-                    전체 이력
+                    ✕ 필터 해제 (전체 내역)
                   </button>
-                  {algoModels.map((m) => (
-                    <button
-                      key={m.model_id}
-                      type="button"
-                      className={`tab-btn ${selectedAlgoModelId === m.model_id ? "active" : ""}`}
-                      style={{ padding: "6px 10px", fontSize: "12px" }}
-                      onClick={() => {
-                        setSelectedAlgoModelId(m.model_id);
-                        fetchAlgoLabTrades(m.model_id);
-                      }}
-                    >
-                      {m.current_rank}위 {m.name.split(" ")[0]}
-                    </button>
-                  ))}
-                </div>
+                )}
               </div>
 
-              {/* 체결 내역 테이블 */}
               <div className="table-container">
                 <table className="board-table">
                   <thead>
                     <tr>
-                      <th style={{ width: "55px", textAlign: "center" }}>No</th>
-                      <th>알고리즘 모델</th>
+                      <th style={{ width: "60px" }}>번호</th>
+                      <th>알고리즘 봇</th>
                       <th>코인(마켓)</th>
-                      <th>가상 매수가 (매수금액)</th>
-                      <th>매수 일시</th>
-                      <th>가상 매도가 (매도금액)</th>
-                      <th>매도 일시</th>
-                      <th style={{ textAlign: "right" }}>실현 손익</th>
-                      <th style={{ textAlign: "right" }}>수익률</th>
-                      <th>청산 사유 / 상태</th>
+                      <th>매수가 / 매수금액</th>
+                      <th>매도가 / 매도금액</th>
+                      <th>매수일시</th>
+                      <th>매도일시</th>
+                      <th>실현손익</th>
+                      <th>체결 사유</th>
                     </tr>
                   </thead>
                   <tbody>
                     {algoTrades.length === 0 ? (
                       <tr>
-                        <td colSpan={10} style={{ textAlign: "center", padding: "28px", color: "#94a3b8" }}>
-                          아직 기록된 가상 체결 내역이 없습니다. 실시간 시뮬레이션이 진행되면 자동으로 기록됩니다.
+                        <td colSpan={9} style={{ textAlign: "center", padding: "28px", color: "#94a3b8" }}>
+                          기록된 가상 매매 체결 이력이 없습니다. 상시 가상 시뮬레이션에 의해 시그널 발생 시 자동 체결됩니다.
                         </td>
                       </tr>
                     ) : (
                       algoTrades.map((t, idx) => (
                         <tr key={t.id || idx}>
-                          <td style={{ textAlign: "center", color: "#94a3b8" }}>{t.id || idx + 1}</td>
-                          <td style={{ fontWeight: 600, color: "#f8fafc" }}>
-                            {t.model_name || algoModels.find((m) => m.model_id === t.model_id)?.name || t.model_id}
+                          <td>{algoTrades.length - idx}</td>
+                          <td style={{ fontWeight: 700, color: "#cbd5e1" }}>
+                            {t.nickname || t.bot_name || t.bot_id}
                           </td>
-                          <td style={{ fontWeight: 700, color: "#38bdf8" }}>{t.market}</td>
+                          <td style={{ fontWeight: 700 }}>{t.market}</td>
                           <td>
-                            {Number(t.buy_price || 0).toLocaleString("ko-KR")}원{" "}
-                            <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-                              ({Math.floor(Number(t.buy_amount || 0)).toLocaleString("ko-KR")}원)
-                            </span>
+                            <div>{formatKRW(t.buy_amount)}</div>
+                            <div style={{ fontSize: "11px", color: "#94a3b8" }}>
+                              {Number(t.buy_price).toLocaleString()}원
+                            </div>
                           </td>
-                          <td style={{ fontSize: "12px", color: "#cbd5e1" }}>{t.buy_date}</td>
                           <td>
-                            {t.sell_price !== null && t.sell_price !== undefined
-                              ? `${Number(t.sell_price).toLocaleString("ko-KR")}원 (${Math.floor(Number(t.sell_amount || 0)).toLocaleString("ko-KR")}원)`
-                              : <span style={{ color: "#eab308" }}>● 보유 중 (미매도)</span>}
+                            {t.sell_amount ? (
+                              <>
+                                <div>{formatKRW(t.sell_amount)}</div>
+                                <div style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                  {Number(t.sell_price).toLocaleString()}원
+                                </div>
+                              </>
+                            ) : (
+                              <span style={{ color: "#38bdf8", fontSize: "12px", fontWeight: 600 }}>보유 중</span>
+                            )}
                           </td>
-                          <td style={{ fontSize: "12px", color: "#cbd5e1" }}>{t.sell_date || "-"}</td>
-                          <td style={{ textAlign: "right", fontWeight: 700 }}>
-                            {t.profit_krw !== null && t.profit_krw !== undefined
-                              ? renderColoredProfit(t.profit_krw)
-                              : "-"}
-                          </td>
-                          <td style={{ textAlign: "right", fontWeight: 700 }}>
-                            {t.profit_pct !== null && t.profit_pct !== undefined ? (
-                              <span
-                                style={{
-                                  color: Number(t.profit_pct) > 0 ? "var(--profit-red)" : Number(t.profit_pct) < 0 ? "var(--loss-blue)" : "#94a3b8",
-                                }}
-                              >
-                                {Number(t.profit_pct) > 0 ? "+" : ""}{Number(t.profit_pct).toFixed(2)}%
-                              </span>
+                          <td style={{ fontSize: "12px", color: "#94a3b8" }}>{t.buy_date}</td>
+                          <td style={{ fontSize: "12px", color: "#94a3b8" }}>{t.sell_date || "-"}</td>
+                          <td>
+                            {t.profit_krw !== null && t.profit_krw !== undefined ? (
+                              <div>
+                                {renderColoredProfit(t.profit_krw)}{" "}
+                                <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                  ({t.profit_pct > 0 ? `+${t.profit_pct}` : t.profit_pct}%)
+                                </span>
+                              </div>
                             ) : (
                               "-"
                             )}
@@ -3130,7 +3355,7 @@ export default function App() {
                                 color: t.status === "HOLDING" ? "#eab308" : "#94a3b8",
                               }}
                             >
-                              {t.reason || (t.status === "HOLDING" ? "포지션 유지 중" : "매도 완료")}
+                              {t.sell_reason || t.buy_reason || (t.status === "HOLDING" ? "포지션 보유 중" : "체결 완료")}
                             </span>
                           </td>
                         </tr>
@@ -3833,158 +4058,295 @@ export default function App() {
               )}
             </div>
 
-            {/* 하단 1: 요구사항 22 - 전체 운용 원금 및 봇별 자금 분배 비율 설정 (소수점 버림 처리) */}
-            <div className="card">
-              <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>
-                1. 전체 운용 원금 및 봇별 자금 분배 비율 설정 (소수점 이하 버림 적용)
-              </h3>
-              {(() => {
-                const allocPlan = computeAllocationPreview(
-                  parseNumericInput(totalCapitalInput),
-                  bots,
-                  ratioInputs
-                );
-                return (
-                  <form onSubmit={handleSaveAllocation}>
-                    <div className="form-row" style={{ marginBottom: "14px" }}>
-                      <label>
-                        전체 운용 원금 (KRW) — 설정 금액:{" "}
-                        <strong
-                          style={{
-                            color:
-                              (upbitAccount.success &&
-                                upbitAccount.total_asset_krw !== null &&
-                                allocPlan.flooredTotal > Number(upbitAccount.total_asset_krw)) ||
-                              (allocPlan.flooredTotal > 0 && allocPlan.flooredTotal < allocPlan.totalUsed)
-                                ? "#ef4444"
-                                : "#4ade80",
-                          }}
-                        >
-                          {formatWithCommas(totalCapitalInput)
-                            ? `${formatWithCommas(totalCapitalInput)}원`
-                            : "미설정"}
-                        </strong>{" "}
-                        (총 보유 자산 한도 이하만 저장 가능 / 0 이하 입력 시 전체 봇 거래 중지)
-                      </label>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        className="form-input"
-                        placeholder="운용 원금을 입력하세요 (총 보유 자산 한도 이하)"
-                        value={formatWithCommas(totalCapitalInput)}
-                        onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
-                      />
-                      {upbitAccount.success &&
-                        upbitAccount.total_asset_krw !== null &&
-                        allocPlan.flooredTotal > Number(upbitAccount.total_asset_krw) && (
-                          <div style={{ fontSize: "12px", color: "#f87171", marginTop: "4px", fontWeight: 600 }}>
-                            ⚠️ 입력한 금액이 업비트 총 보유 자산 한도(
-                            {Number(upbitAccount.total_asset_krw).toLocaleString("ko-KR")}원)를 초과하여 저장할 수 없습니다.
+            {/* 1. 실제 거래 담당 봇(1~3개) 선택 및 동적 투자금 배분 설정 */}
+            <div className="card" style={{ marginBottom: "20px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "16px" }}>
+                <div>
+                  <h3 style={{ fontSize: "17px", fontWeight: 800, margin: 0, color: "#f8fafc", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span>🎯</span> 1. 실제 거래 담당 봇 선택 및 동적 투자금 배분
+                  </h3>
+                  <p style={{ margin: "4px 0 0 0", fontSize: "12.5px", color: "#94a3b8" }}>
+                    10대 순수 알고리즘 봇 중 실제 거래를 수행할 봇을 <strong>최소 1개 ~ 최대 3개</strong> 선택하십시오. 선택된 봇들에게만 실전 운용 원금이 동적으로 배분됩니다.
+                  </p>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span
+                    style={{
+                      padding: "5px 12px",
+                      borderRadius: "20px",
+                      fontSize: "12.5px",
+                      fontWeight: 700,
+                      background: selectedLiveBotIds.length >= 1 && selectedLiveBotIds.length <= 3 ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)",
+                      color: selectedLiveBotIds.length >= 1 && selectedLiveBotIds.length <= 3 ? "#34d399" : "#f87171",
+                      border: selectedLiveBotIds.length >= 1 && selectedLiveBotIds.length <= 3 ? "1px solid rgba(16, 185, 129, 0.3)" : "1px solid rgba(239, 68, 68, 0.3)",
+                    }}
+                  >
+                    현재 선택: {selectedLiveBotIds.length}개 / 최대 3개 (최소 1개)
+                  </span>
+                </div>
+              </div>
+
+              {/* Step 1: 10대 봇 선택 체크박스 카드 리스트 */}
+              <div style={{ marginBottom: "24px" }}>
+                <div style={{ fontSize: "13.5px", fontWeight: 700, color: "#e2e8f0", marginBottom: "10px", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{ background: "#3b82f6", color: "#fff", borderRadius: "50%", width: "20px", height: "20px", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "11px" }}>1</span>
+                  <span>10대 알고리즘 봇 중 실전 거래 담당 봇 선택 (클릭하여 토글)</span>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "12px" }}>
+                  {(algoModels.length > 0 ? algoModels : bots).map((bot, idx) => {
+                    const isSelected = selectedLiveBotIds.includes(bot.bot_id);
+                    const rank = bot.rank || idx + 1;
+                    const retPct = bot.total_return_pct ?? 0;
+                    return (
+                      <div
+                        key={bot.bot_id}
+                        className={`bot-select-card ${isSelected ? "selected" : ""}`}
+                        onClick={() => handleToggleLiveBotSelection(bot.bot_id)}
+                        style={{
+                          background: isSelected ? "linear-gradient(135deg, rgba(30, 58, 138, 0.35), rgba(15, 23, 42, 0.85))" : "#111827",
+                          border: isSelected ? "2px solid #3b82f6" : "1px solid #1f2937",
+                          borderRadius: "10px",
+                          padding: "14px",
+                          cursor: "pointer",
+                          transition: "all 0.2s ease",
+                          position: "relative",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {}}
+                              style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "#3b82f6" }}
+                            />
+                            <span style={{ fontWeight: 800, fontSize: "14px", color: isSelected ? "#93c5fd" : "#f1f5f9" }}>
+                              {bot.nickname || bot.name}
+                            </span>
                           </div>
-                        )}
-                      {allocPlan.flooredTotal > 0 && allocPlan.flooredTotal < allocPlan.totalUsed && (
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              padding: "2px 7px",
+                              borderRadius: "10px",
+                              fontWeight: 700,
+                              background: rank === 1 ? "rgba(251, 191, 36, 0.2)" : rank === 2 ? "rgba(203, 213, 225, 0.2)" : rank === 3 ? "rgba(249, 115, 22, 0.2)" : "rgba(71, 85, 105, 0.3)",
+                              color: rank === 1 ? "#fbbf24" : rank === 2 ? "#e2e8f0" : rank === 3 ? "#fb923c" : "#94a3b8",
+                            }}
+                          >
+                            #{rank}위
+                          </span>
+                        </div>
+
+                        <div style={{ fontSize: "11.5px", color: "#94a3b8", marginBottom: "8px", lineHeight: "1.4" }}>
+                          {bot.strategy_desc || bot.strategy || bot.bot_id}
+                        </div>
+
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: "8px" }}>
+                          <span style={{ color: "#64748b" }}>가상 수익률</span>
+                          <span style={{ fontWeight: 700, color: retPct >= 0 ? "#f87171" : "#38bdf8" }}>
+                            {retPct >= 0 ? `+${retPct.toFixed(2)}%` : `${retPct.toFixed(2)}%`}
+                          </span>
+                        </div>
+
+                        <div style={{ marginTop: "6px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span
+                            style={{
+                              fontSize: "10.5px",
+                              padding: "2px 6px",
+                              borderRadius: "4px",
+                              fontWeight: 700,
+                              background: isSelected ? "rgba(59, 130, 246, 0.2)" : "rgba(75, 85, 99, 0.2)",
+                              color: isSelected ? "#60a5fa" : "#6b7280",
+                            }}
+                          >
+                            {isSelected ? "⚡ 실전 담당 중" : "가상 시뮬레이션 전용"}
+                          </span>
+                          <span style={{ fontSize: "11px", color: "#64748b" }}>
+                            {bot.market || "KRW-BTC"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Step 2: 선택된 실전 봇 동적 투자금 설정 패널 (선택된 1~3개 봇만 동적 렌더링) */}
+              <div
+                style={{
+                  background: "#0b0f19",
+                  border: "1px solid #1e293b",
+                  borderRadius: "10px",
+                  padding: "18px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
+                  <div style={{ fontSize: "13.5px", fontWeight: 700, color: "#e2e8f0", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span style={{ background: "#10b981", color: "#fff", borderRadius: "50%", width: "20px", height: "20px", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "11px" }}>2</span>
+                    <span>선택된 실전 봇({selectedLiveBotIds.length}개) 동적 투자금 및 비율(%) 배분</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={handleDistributeEvenly}
+                    style={{ padding: "5px 12px", fontSize: "12px", fontWeight: 600 }}
+                  >
+                    ⚖️ 균등 배분 (100% N등분)
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveLiveBotsAllocation}>
+                  {/* 전체 운용 원금 입력 */}
+                  <div className="form-row" style={{ marginBottom: "16px" }}>
+                    <label style={{ fontSize: "13px", fontWeight: 600, color: "#cbd5e1" }}>
+                      총 실전 운용 원금 (KRW) — 설정 금액:{" "}
+                      <strong style={{ color: "#4ade80", fontSize: "14px" }}>
+                        {formatWithCommas(totalCapitalInput) ? `${formatWithCommas(totalCapitalInput)}원` : "0원"}
+                      </strong>{" "}
+                      (총 보유 자산 한도 이하만 저장 가능)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className="form-input"
+                      placeholder="운용 원금을 입력하세요 (예: 1,000,000)"
+                      value={formatWithCommas(totalCapitalInput)}
+                      onChange={(e) => setTotalCapitalInput(parseNumericInput(e.target.value))}
+                      style={{ fontSize: "15px", fontWeight: 700, color: "#f8fafc" }}
+                    />
+                    {upbitAccount.success &&
+                      upbitAccount.total_asset_krw !== null &&
+                      parseNumericInput(totalCapitalInput) > Number(upbitAccount.total_asset_krw) && (
                         <div style={{ fontSize: "12px", color: "#f87171", marginTop: "4px", fontWeight: 600 }}>
-                          ⚠️ 입력한 금액이 현재 이미 사용된 투자금(
-                          {allocPlan.totalUsed.toLocaleString("ko-KR")}원)보다 적어 저장할 수 없습니다.
+                          ⚠️ 입력한 금액이 업비트 총 보유 자산 한도(
+                          {Number(upbitAccount.total_asset_krw).toLocaleString("ko-KR")}원)를 초과하여 저장할 수 없습니다.
                         </div>
                       )}
-                    </div>
+                  </div>
 
-                    {/* 투자금 총액 vs 이미 사용된 투자금 + 봇별 가용 잔고 일치 요약 */}
-                    <div
-                      style={{
-                        background: "#0f172a",
-                        border: "1px solid #334155",
-                        borderRadius: "10px",
-                        padding: "12px 14px",
-                        marginBottom: "18px",
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                        gap: "12px",
-                        fontSize: "12.5px",
-                      }}
-                    >
-                      <div>
-                        <div style={{ color: "#94a3b8", marginBottom: "2px" }}>전체 투자금 총액</div>
-                        <div style={{ fontWeight: 700, fontSize: "14px", color: "#f8fafc" }}>
-                          {allocPlan.flooredTotal.toLocaleString("ko-KR")}원
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ color: "#94a3b8", marginBottom: "2px" }}>이미 사용된 투자금 합계</div>
-                        <div style={{ fontWeight: 700, fontSize: "14px", color: "#fbbf24" }}>
-                          {allocPlan.totalUsed.toLocaleString("ko-KR")}원
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ color: "#94a3b8", marginBottom: "2px" }}>잔여/추가 가용 분배금 합계</div>
-                        <div style={{ fontWeight: 700, fontSize: "14px", color: "#38bdf8" }}>
-                          {allocPlan.totalVirtual.toLocaleString("ko-KR")}원
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ color: "#94a3b8", marginBottom: "2px" }}>각 봇별 배정 원금 총합</div>
-                        <div
-                          style={{
-                            fontWeight: 700,
-                            fontSize: "14px",
-                            color:
-                              allocPlan.totalAllocated === allocPlan.flooredTotal ? "#4ade80" : "#f87171",
-                          }}
-                        >
-                          {allocPlan.totalAllocated.toLocaleString("ko-KR")}원{" "}
-                          {allocPlan.totalAllocated === allocPlan.flooredTotal && allocPlan.flooredTotal > 0
-                            ? "(총액 일치 ✓)"
-                            : ""}
-                        </div>
-                      </div>
+                  {/* 선택된 실전 봇만 동적으로 렌더링되는 자금 배분 그리드 */}
+                  {selectedLiveBotIds.length === 0 ? (
+                    <div style={{ padding: "20px", textAlign: "center", color: "#94a3b8", background: "#111827", borderRadius: "8px" }}>
+                      상단에서 실전 거래를 담당할 봇을 최소 1개 이상 선택하십시오.
                     </div>
-
-                    <div className="settings-grid">
-                      {bots.map((b) => {
-                        const rawRatio = ratioInputs[b.bot_id];
-                        const botPreview = allocPlan.byBot[b.bot_id] || {
-                          used: 0,
-                          allocated: 0,
-                          virtual_krw: 0,
+                  ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fit, minmax(280px, 1fr))`, gap: "14px", marginBottom: "18px" }}>
+                      {selectedLiveBotIds.map((botId) => {
+                        const botObj = (algoModels.length > 0 ? algoModels : bots).find((b) => b.bot_id === botId) || {
+                          bot_id: botId,
+                          nickname: botId,
+                          name: botId,
                         };
+                        const ratio = liveAllocRatios[botId] ?? 0;
+                        const numericCap = parseNumericInput(totalCapitalInput) || 0;
+                        const allocatedKrw = Math.floor(numericCap * (Number(ratio) / 100));
+
                         return (
-                          <div className="form-row" key={b.bot_id}>
-                            <label>
-                              [{b.nickname || b.name}] 분배 비율 (%) → 배정 원금:{" "}
-                              <strong style={{ color: "#a5b4fc" }}>
-                                {botPreview.allocated.toLocaleString("ko-KR")}원
-                              </strong>
-                            </label>
-                            <div style={{ fontSize: "11.5px", color: "#94a3b8", marginBottom: "4px" }}>
-                              이미 사용: <strong style={{ color: "#fbbf24" }}>{botPreview.used.toLocaleString("ko-KR")}원</strong>{" "}
-                              + 가용 잔고: <strong style={{ color: "#4ade80" }}>{botPreview.virtual_krw.toLocaleString("ko-KR")}원</strong>
+                          <div
+                            key={botId}
+                            style={{
+                              background: "#161f33",
+                              border: "1px solid #26324d",
+                              borderRadius: "10px",
+                              padding: "16px",
+                            }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                              <div style={{ fontWeight: 800, fontSize: "15px", color: "#93c5fd" }}>
+                                {botObj.nickname || botObj.name}
+                              </div>
+                              <span style={{ fontSize: "11px", color: "#64748b" }}>{botId}</span>
                             </div>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              max="100"
-                              className="form-input"
-                              placeholder="분배 비율(%) 입력"
-                              value={rawRatio ?? ""}
-                              onChange={(e) =>
-                                setRatioInputs((prev) => ({
-                                  ...prev,
-                                  [b.bot_id]: e.target.value === "" ? "" : Number(e.target.value),
-                                }))
-                              }
-                            />
+
+                            <div style={{ marginBottom: "10px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: "4px" }}>
+                                <span style={{ color: "#94a3b8" }}>투자 비율 (%)</span>
+                                <strong style={{ color: "#38bdf8" }}>{ratio}%</strong>
+                              </div>
+                              <input
+                                type="number"
+                                step="1"
+                                min="0"
+                                max="100"
+                                className="form-input"
+                                placeholder="비율 (%)"
+                                value={ratio}
+                                onChange={(e) => {
+                                  const val = e.target.value === "" ? 0 : Number(e.target.value);
+                                  setLiveAllocRatios((prev) => ({
+                                    ...prev,
+                                    [botId]: val,
+                                  }));
+                                }}
+                                style={{ width: "100%", marginBottom: "6px" }}
+                              />
+                            </div>
+
+                            <div style={{ background: "#0f172a", borderRadius: "6px", padding: "10px", fontSize: "12px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
+                                <span style={{ color: "#94a3b8" }}>배정 원금 (Math.floor)</span>
+                                <strong style={{ color: "#4ade80", fontSize: "13px" }}>
+                                  {allocatedKrw.toLocaleString("ko-KR")}원
+                                </strong>
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between", color: "#64748b", fontSize: "11px" }}>
+                                <span>적용 수식</span>
+                                <span>{numericCap.toLocaleString("ko-KR")} × {ratio}%</span>
+                              </div>
+                            </div>
                           </div>
                         );
                       })}
                     </div>
-                    <button type="submit" className="btn btn-primary" style={{ marginTop: "8px" }}>
-                      자금 분배 비율 저장 (소수점 버림 적용)
-                    </button>
-                  </form>
-                );
-              })()}
+                  )}
+
+                  {/* 배분 요약 바 및 저장 버튼 */}
+                  {selectedLiveBotIds.length > 0 && (() => {
+                    const ratioSum = selectedLiveBotIds.reduce((sum, id) => sum + Number(liveAllocRatios[id] || 0), 0);
+                    const numericCap = parseNumericInput(totalCapitalInput) || 0;
+                    const totalAlloc = selectedLiveBotIds.reduce((sum, id) => {
+                      return sum + Math.floor(numericCap * (Number(liveAllocRatios[id] || 0) / 100));
+                    }, 0);
+                    const is100 = Math.abs(ratioSum - 100) < 0.1;
+
+                    return (
+                      <div style={{ background: "#111827", borderRadius: "8px", padding: "14px", border: "1px solid #1f2937" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "12px" }}>
+                          <div>
+                            <div style={{ fontSize: "12px", color: "#94a3b8" }}>비율 합계 검증</div>
+                            <div style={{ fontSize: "15px", fontWeight: 800, color: is100 ? "#4ade80" : "#f87171" }}>
+                              {ratioSum}% {is100 ? "✓ 100% 일치" : "(정확히 100%여야 저장 가능)"}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: "12px", color: "#94a3b8" }}>실전 봇 총 배정 원금</div>
+                            <div style={{ fontSize: "15px", fontWeight: 800, color: "#f8fafc" }}>
+                              {totalAlloc.toLocaleString("ko-KR")}원
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          type="submit"
+                          className="btn btn-primary"
+                          disabled={savingLiveBots || !is100 || !(numericCap > 0)}
+                          style={{
+                            width: "100%",
+                            padding: "12px",
+                            fontSize: "14px",
+                            fontWeight: 700,
+                            opacity: savingLiveBots || !is100 || !(numericCap > 0) ? 0.6 : 1,
+                          }}
+                        >
+                          {savingLiveBots ? "실전 봇 및 자금 배분 저장 중..." : "💾 실전 거래 담당 봇 및 투자금 설정 저장"}
+                        </button>
+                      </div>
+                    );
+                  })()}
+                </form>
+              </div>
             </div>
 
             {/* 요구사항 15: 봇 수정 및 각 봇별 별명(Nickname) 설정 */}

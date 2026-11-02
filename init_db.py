@@ -139,15 +139,27 @@ def init_database(db_path: Optional[str] = None) -> None:
             """
         )
 
-        # 5. 기본 3개 봇 자금 비율 (4:4:2) 시딩
+        # 5. 10대 알고리즘 봇 마스터 데이터 시딩 (상위 3개 기본 실전 배분 34:33:33)
+        try:
+            conn.execute("ALTER TABLE bot_accounts ADD COLUMN is_selected_for_live INTEGER NOT NULL DEFAULT 0;")
+        except Exception:
+            pass
+
         initial_capital = float(os.getenv("INITIAL_TOTAL_CAPITAL", "1000000"))
-        default_bots = [
-            ("bot_vb", "슈퍼트렌드 변동성 돌파 봇", 0.40, initial_capital * 0.40),
-            ("bot_momentum", "볼린저 밴드 스퀴즈 모멘텀 봇", 0.40, initial_capital * 0.40),
-            ("bot_bb", "다단계 분할 매수 볼린저 역추세 봇", 0.20, initial_capital * 0.20),
+        ten_bots = [
+            ("bot_01", "변동성 돌파 알파 (Larry Williams)", 0.34, initial_capital * 0.34, 1),
+            ("bot_02", "슈퍼트렌드 & ATR 트레일링", 0.33, initial_capital * 0.33, 1),
+            ("bot_03", "듀얼 모멘텀 스윙", 0.33, initial_capital * 0.33, 1),
+            ("bot_04", "볼린저 밴드 스퀴즈 돌파", 0.0, 0.0, 0),
+            ("bot_05", "볼린저 밴드 역추세 반등", 0.0, 0.0, 0),
+            ("bot_06", "다단계 분할 매수 그리드", 0.0, 0.0, 0),
+            ("bot_07", "MACD + RSI 골든크로스", 0.0, 0.0, 0),
+            ("bot_08", "정배열 20일선 눌림목 스윙", 0.0, 0.0, 0),
+            ("bot_09", "거래량 폭발 모멘텀 스캘퍼", 0.0, 0.0, 0),
+            ("bot_10", "RSI 극단 과매도 & VWAP 회귀", 0.0, 0.0, 0),
         ]
 
-        for bot_id, name, ratio, cap in default_bots:
+        for bot_id, name, ratio, cap, is_live in ten_bots:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO bot_accounts (
@@ -157,10 +169,11 @@ def init_database(db_path: Optional[str] = None) -> None:
                     allocated_capital,
                     virtual_krw,
                     total_realized_pnl,
+                    is_selected_for_live,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, 0.0, CURRENT_TIMESTAMP);
+                ) VALUES (?, ?, ?, ?, ?, 0.0, ?, CURRENT_TIMESTAMP);
                 """,
-                (bot_id, name, ratio, cap, cap),
+                (bot_id, name, ratio, cap, cap, is_live),
             )
 
         conn.execute("COMMIT;")

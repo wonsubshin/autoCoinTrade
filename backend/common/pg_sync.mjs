@@ -95,6 +95,20 @@ export class PgSyncManager {
       }
 
       // 2. bots
+      try {
+        await this.pool.query(`
+          ALTER TABLE bots ADD COLUMN IF NOT EXISTS is_selected_for_live INT NOT NULL DEFAULT 0;
+          ALTER TABLE bots ADD COLUMN IF NOT EXISTS paper_initial_capital BIGINT NOT NULL DEFAULT 10000000;
+          ALTER TABLE bots ADD COLUMN IF NOT EXISTS paper_virtual_krw BIGINT NOT NULL DEFAULT 10000000;
+          ALTER TABLE bots ADD COLUMN IF NOT EXISTS paper_is_running INT NOT NULL DEFAULT 1;
+          ALTER TABLE bots ADD COLUMN IF NOT EXISTS paper_peak_equity BIGINT NOT NULL DEFAULT 10000000;
+          ALTER TABLE bots ADD COLUMN IF NOT EXISTS paper_mdd_pct NUMERIC(8,2) NOT NULL DEFAULT 0.0;
+          ALTER TABLE bots ADD COLUMN IF NOT EXISTS paper_status_msg TEXT NOT NULL DEFAULT '시그널 대기 중';
+          ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS buy_reason TEXT;
+          ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS sell_reason TEXT;
+        `);
+      } catch {}
+
       const bots = sqliteDb.prepare("SELECT * FROM bots").all();
       for (const b of bots) {
         await this.pool.query(
@@ -102,10 +116,15 @@ export class PgSyncManager {
              bot_id, name, nickname, strategy_type, description,
              allocation_ratio, allocated_capital, virtual_krw, is_running,
              min_volume_krw, stop_loss_pct, take_profit_pct, config_json,
-             last_status_msg, updated_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             last_status_msg, updated_at,
+             is_selected_for_live, paper_initial_capital, paper_virtual_krw,
+             paper_is_running, paper_peak_equity, paper_mdd_pct, paper_status_msg
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
            ON CONFLICT (bot_id) DO UPDATE SET
+             name = EXCLUDED.name,
              nickname = EXCLUDED.nickname,
+             strategy_type = EXCLUDED.strategy_type,
+             description = EXCLUDED.description,
              allocation_ratio = EXCLUDED.allocation_ratio,
              allocated_capital = EXCLUDED.allocated_capital,
              virtual_krw = EXCLUDED.virtual_krw,
@@ -115,14 +134,28 @@ export class PgSyncManager {
              take_profit_pct = EXCLUDED.take_profit_pct,
              config_json = EXCLUDED.config_json,
              last_status_msg = EXCLUDED.last_status_msg,
-             updated_at = EXCLUDED.updated_at`,
+             updated_at = EXCLUDED.updated_at,
+             is_selected_for_live = EXCLUDED.is_selected_for_live,
+             paper_initial_capital = EXCLUDED.paper_initial_capital,
+             paper_virtual_krw = EXCLUDED.paper_virtual_krw,
+             paper_is_running = EXCLUDED.paper_is_running,
+             paper_peak_equity = EXCLUDED.paper_peak_equity,
+             paper_mdd_pct = EXCLUDED.paper_mdd_pct,
+             paper_status_msg = EXCLUDED.paper_status_msg`,
           [
             b.bot_id, b.name, b.nickname, b.strategy_type, b.description || "",
             Number(b.allocation_ratio || 0), Math.floor(Number(b.allocated_capital || 0)),
             Math.floor(Number(b.virtual_krw || 0)), Number(b.is_running || 0),
             Math.floor(Number(b.min_volume_krw || 0)), Number(b.stop_loss_pct || 0),
             Number(b.take_profit_pct || 0), b.config_json || "{}",
-            b.last_status_msg || "", b.updated_at
+            b.last_status_msg || "", b.updated_at,
+            Number(b.is_selected_for_live || 0),
+            Math.floor(Number(b.paper_initial_capital || 10000000)),
+            Math.floor(Number(b.paper_virtual_krw || 10000000)),
+            Number(b.paper_is_running || 1),
+            Math.floor(Number(b.paper_peak_equity || 10000000)),
+            Number(b.paper_mdd_pct || 0),
+            b.paper_status_msg || "시그널 대기 중"
           ]
         );
       }

@@ -1133,3 +1133,202 @@ body {
 }
 
 
+
+/* ==========================================================================
+   10대 순수 알고리즘 상시 가상 경쟁(Arena) & 선택형 실전 봇 전용 스타일
+   ========================================================================== */
+
+.arena-status-banner {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(6, 78, 59, 0.25) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: 12px;
+  padding: 14px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.arena-pulse-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.5);
+  color: #34d399;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.arena-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 10px #10b981;
+  animation: pulse-green 1.6s infinite ease-in-out;
+}
+
+@keyframes pulse-green {
+  0% { transform: scale(0.9); opacity: 0.8; }
+  50% { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.8; }
+}
+
+.podium-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.podium-card {
+  position: relative;
+  background: #131c31;
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  overflow: hidden;
+}
+
+.podium-card:hover {
+  transform: translateY(-3px);
+}
+
+.podium-card.gold {
+  border: 1px solid rgba(234, 179, 8, 0.6);
+  background: linear-gradient(135deg, rgba(30, 27, 75, 0.5) 0%, rgba(20, 24, 46, 0.9) 100%);
+  box-shadow: 0 8px 24px -4px rgba(234, 179, 8, 0.25);
+}
+
+.podium-card.silver {
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.4) 0%, rgba(15, 23, 42, 0.9) 100%);
+  box-shadow: 0 8px 20px -4px rgba(148, 163, 184, 0.15);
+}
+
+.podium-card.bronze {
+  border: 1px solid rgba(217, 119, 6, 0.5);
+  background: linear-gradient(135deg, rgba(69, 26, 3, 0.3) 0%, rgba(24, 24, 37, 0.9) 100%);
+  box-shadow: 0 8px 20px -4px rgba(217, 119, 6, 0.15);
+}
+
+.podium-badge {
+  font-size: 26px;
+  margin-bottom: 6px;
+}
+
+.badge-live-selected {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+}
+
+/* 동적 1~3개 실전 봇 선택 단계 스타일 */
+.step-box {
+  background: #111a2e;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.step-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16.5px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin-bottom: 6px;
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #6366f1;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.bot-select-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.bot-select-card {
+  background: #162035;
+  border: 1.5px solid #23314f;
+  border-radius: 10px;
+  padding: 14px;
+  cursor: pointer;
+  transition: all 0.18s ease-in-out;
+  position: relative;
+}
+
+.bot-select-card:hover {
+  border-color: #4f46e5;
+  background: #19253d;
+}
+
+.bot-select-card.selected {
+  border-color: #6366f1;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18) 0%, rgba(30, 27, 75, 0.4) 100%);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.2);
+}
+
+.bot-select-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.bot-checkbox-custom {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 2px solid #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.bot-select-card.selected .bot-checkbox-custom {
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #fff;
+}
+
+.dynamic-alloc-card {
+  background: #141e33;
+  border: 1px solid #293859;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}

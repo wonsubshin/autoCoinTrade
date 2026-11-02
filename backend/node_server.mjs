@@ -7,11 +7,19 @@ import { DatabaseSync } from "node:sqlite";
 import { pgSyncManager } from "./common/pg_sync.mjs";
 import { syncNewsToDatabase, queryNewsList } from "./common/news_service.mjs";
 import {
-  initAlgoLabTables,
-  runAlgoLabCycle,
-  getAlgoLabModels,
-  getAlgoLabTrades,
-  resetAlgoLab,
+  ARENA_BOT_DEFS,
+  ARENA_BOT_IDS,
+  normalizeBotId,
+  ensureArenaSchema,
+  seedArenaBots,
+  evaluateStrategy,
+  buildMarketData,
+  updatePeakPrice,
+  runArenaCycle,
+  getArenaLeaderboard,
+  getArenaTrades,
+  getArenaStatus,
+  resetArena,
 } from "./common/algo_lab_service.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -92,7 +100,14 @@ function initializeDatabase() {
       take_profit_pct REAL NOT NULL DEFAULT 0,
       config_json TEXT NOT NULL DEFAULT '{}',
       last_status_msg TEXT NOT NULL DEFAULT '대기 중',
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      is_selected_for_live INTEGER NOT NULL DEFAULT 0,
+      paper_initial_capital INTEGER NOT NULL DEFAULT 10000000,
+      paper_virtual_krw INTEGER NOT NULL DEFAULT 10000000,
+      paper_is_running INTEGER NOT NULL DEFAULT 1,
+      paper_peak_equity INTEGER NOT NULL DEFAULT 10000000,
+      paper_mdd_pct REAL NOT NULL DEFAULT 0,
+      paper_status_msg TEXT NOT NULL DEFAULT '시그널 대기 중'
     );
     CREATE TABLE IF NOT EXISTS trades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,7 +193,9 @@ function initializeDatabase() {
       sell_date TEXT,
       profit_krw INTEGER,
       profit_pct REAL,
-      status TEXT NOT NULL DEFAULT 'HOLDING'
+      status TEXT NOT NULL DEFAULT 'HOLDING',
+      buy_reason TEXT,
+      sell_reason TEXT
     );
 
     CREATE TABLE IF NOT EXISTS paper_bot_positions (
@@ -216,8 +233,9 @@ function initializeDatabase() {
     console.warn("[Migration] Paper trades separation:", err.message);
   }
 
-  // 알고리즘 검증소(Algorithm Lab) 테이블 및 모델 초기화
-  initAlgoLabTables(db);
+  // 10대 알고리즘 Arena: bots 테이블 스키마 보강, 구 봇 ID 마이그레이션 및 bot_01~bot_10 시드
+  const arenaSchemaInfo = ensureArenaSchema(db);
+  seedArenaBots(db, { hadSelectionColumn: arenaSchemaInfo.hadSelectionColumn });
 
   // 기존에 들어가 있던 샘플(seed) 데이터 및 매수 테스트(order-bid-* / auto-bid-*) 가상 이력 제거
   db.exec("DELETE FROM bot_positions WHERE order_uuid LIKE 'seed-%' OR order_uuid LIKE 'order-bid-%' OR order_uuid LIKE 'auto-bid-%';");
@@ -252,131 +270,17 @@ function initializeDatabase() {
     db.prepare("UPDATE bots SET virtual_krw = ? WHERE bot_id = ?").run(syncVirtual, b.bot_id);
   }
 
-  const recommendedBots = [
-    {
-      bot_id: "bot_volatility",
-      name: "필터 결합형 변동성 돌파 봇",
-      nickname: "돌파봇-알파",
-      strategy_type: "VOLATILITY_BREAKOUT",
-      description: "장중 단타 / 1일 보유 | 변동성 돌파(K=0.4) + 20일 이평선 추세 필터 전략",
-      allocation_ratio: 40,
-      min_volume_krw: 10000000000,
-      stop_loss_pct: 2.5,
-      take_profit_pct: 4.5,
-      config_json: JSON.stringify({
-        k_value: 0.4,
-        ma_period: 20,
-        volume_multiplier: 1.2,
-        order_ratio: 0.3,
-      }),
-    },
-    {
-      bot_id: "bot_dual_momentum",
-      name: "듀얼 모멘텀 스윙 봇",
-      nickname: "모멘텀봇-베타",
-      strategy_type: "DUAL_MOMENTUM",
-      description: "상대 모멘텀(상위 2종목) + 절대 모멘텀(+1.5% 이상) 스윙 전략",
-      allocation_ratio: 40,
-      min_volume_krw: 15000000000,
-      stop_loss_pct: 3.5,
-      take_profit_pct: 7.0,
-      config_json: JSON.stringify({
-        lookback_days: 8,
-        abs_momentum_threshold_pct: 1.5,
-        top_n: 2,
-        order_ratio: 0.35,
-      }),
-    },
-    {
-      bot_id: "bot_bollinger_reversal",
-      name: "고변동성 볼린저 밴드 역추세 봇",
-      nickname: "볼린저봇-감마",
-      strategy_type: "BOLLINGER_REVERSAL",
-      description: "고변동성 코인 볼린저 밴드(20, 2.0σ) 15분봉 단기 반등 전략",
-      allocation_ratio: 20,
-      min_volume_krw: 8000000000,
-      stop_loss_pct: 2.0,
-      take_profit_pct: 3.5,
-      config_json: JSON.stringify({
-        bb_period: 20,
-        bb_std: 2.0,
-        bb_stddev: 2.0,
-        candle_unit: "minutes/15",
-        order_krw: 15000,
-      }),
-    },
-  ];
-
+  // 시스템 기본 설정 (기존 값이 없는 경우에만 초기화)
   const now = nowKSTString();
-  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM bots").get();
-  if (countRow && countRow.cnt > 0) {
-    // 봇 설정이 비어 있는 경우(min_volume_krw = 0 또는 nickname = '') 추천값으로 업데이트 저장
-    const updateRecommended = db.prepare(`
-      UPDATE bots
-      SET nickname = CASE WHEN nickname = '' THEN ? ELSE nickname END,
-          description = ?,
-          allocation_ratio = CASE WHEN allocation_ratio = 0 THEN ? ELSE allocation_ratio END,
-          min_volume_krw = CASE WHEN min_volume_krw = 0 THEN ? ELSE min_volume_krw END,
-          stop_loss_pct = CASE WHEN stop_loss_pct = 0 THEN ? ELSE stop_loss_pct END,
-          take_profit_pct = CASE WHEN take_profit_pct = 0 THEN ? ELSE take_profit_pct END,
-          config_json = CASE WHEN config_json = '{}' OR config_json = '' THEN ? ELSE config_json END,
-          updated_at = ?
-      WHERE bot_id = ?
-    `);
-    for (const rb of recommendedBots) {
-      updateRecommended.run(
-        rb.nickname,
-        rb.description,
-        rb.allocation_ratio,
-        rb.min_volume_krw,
-        rb.stop_loss_pct,
-        rb.take_profit_pct,
-        rb.config_json,
-        now,
-        rb.bot_id
-      );
-    }
-    return;
-  }
-
-  const setSetting = db.prepare(
-    "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)"
+  const setDefault = db.prepare(
+    "INSERT OR IGNORE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)"
   );
-  setSetting.run("total_capital", "0", now);
-  setSetting.run("capital_configured", "0", now);
-  setSetting.run("zero_balance_halted", "0", now);
-  setSetting.run("zero_balance_reason", "", now);
-  setSetting.run("stats_start_date", "2026-10-01", now);
-  setSetting.run("entry_code", "stock", now);
-
-  const insertBot = db.prepare(`
-    INSERT INTO bots (
-      bot_id, name, nickname, strategy_type, description,
-      allocation_ratio, allocated_capital, virtual_krw, is_running,
-      min_volume_krw, stop_loss_pct, take_profit_pct, config_json,
-      last_status_msg, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const rb of recommendedBots) {
-    insertBot.run(
-      rb.bot_id,
-      rb.name,
-      rb.nickname,
-      rb.strategy_type,
-      rb.description,
-      rb.allocation_ratio,
-      0,
-      0,
-      0,
-      rb.min_volume_krw,
-      rb.stop_loss_pct,
-      rb.take_profit_pct,
-      rb.config_json,
-      "대기 중",
-      now
-    );
-  }
+  setDefault.run("total_capital", "0", now);
+  setDefault.run("capital_configured", "0", now);
+  setDefault.run("zero_balance_halted", "0", now);
+  setDefault.run("zero_balance_reason", "", now);
+  setDefault.run("stats_start_date", "2026-10-01", now);
+  setDefault.run("entry_code", "stock", now);
 }
 
 initializeDatabase();
@@ -403,12 +307,12 @@ function isLiveMode() {
 }
 
 function getPositionsTableName(mode = null) {
-  const m = mode || (isLiveMode() ? "live" : "paper");
+  const m = mode || "live";
   return m === "live" ? "bot_positions" : "paper_bot_positions";
 }
 
 function getTradesTableName(mode = null) {
-  const m = mode || (isLiveMode() ? "live" : "paper");
+  const m = mode || "live";
   return m === "live" ? "trades" : "paper_trades";
 }
 
@@ -440,10 +344,13 @@ function recalculateAndApplyBotAllocations(flooredTotal, ratiosMap = null, mode 
   const tradesTable = getTradesTableName(mode);
   const items = bots.map((b) => {
     const used = Math.floor(Number(b.used_capital || 0));
-    const ratio = Math.max(
-      0,
-      Number(ratiosMap && ratiosMap[b.bot_id] !== undefined ? ratiosMap[b.bot_id] : b.allocation_ratio || 0)
-    );
+    const isSelected = Number(b.is_selected_for_live || 0) === 1;
+    const ratio = !isSelected
+      ? 0
+      : Math.max(
+          0,
+          Number(ratiosMap && ratiosMap[b.bot_id] !== undefined ? ratiosMap[b.bot_id] : b.allocation_ratio || 0)
+        );
     const pnlRow = db
       .prepare(`SELECT COALESCE(SUM(profit_krw), 0) AS total_pnl FROM ${tradesTable} WHERE bot_id = ? AND status = 'COMPLETED'`)
       .get(b.bot_id);
@@ -544,14 +451,17 @@ function recalculateAndApplyBotAllocations(flooredTotal, ratiosMap = null, mode 
 
 function checkAndHaltIfZeroBalance(mode = null) {
   const db = getDb();
+  if (mode === "paper") {
+    return { halted: false, reason: "" };
+  }
   const configured = getSetting("capital_configured", "0") === "1";
   if (!configured) {
     return { halted: false, reason: "" };
   }
   const totalCapital = Math.floor(Number(getSetting("total_capital", "0")));
-  const bots = getBots(mode);
+  const bots = getBots("live").filter((b) => Number(b.is_selected_for_live) === 1);
   const totalVirtual = bots.reduce((acc, b) => acc + Number(b.virtual_krw || 0), 0);
-  const posTable = getPositionsTableName(mode);
+  const posTable = getPositionsTableName(mode || "live");
   const openPosCnt = db.prepare(`SELECT COUNT(*) AS cnt FROM ${posTable} WHERE status = 'OPEN'`).get().cnt;
 
   let shouldHalt = false;
@@ -1801,6 +1711,25 @@ ${newsSummaryList}
   }
 }
 
+async function resetPaperArenaAndNotify(db) {
+  resetArena(db);
+  if (pgSyncManager.isConnected && pgSyncManager.pool) {
+    try {
+      await pgSyncManager.pool.query("DELETE FROM paper_trades; DELETE FROM paper_bot_positions;");
+    } catch {}
+  }
+  setTimeout(async () => {
+    try {
+      await runAlwaysOnPaperArenaCycle();
+    } catch {}
+  }, 100);
+  return {
+    success: true,
+    message: "가상거래 전용 원장(paper_trades)과 10대 알고리즘 가상 경쟁이 성공적으로 초기화되었습니다.",
+    leaderboard: getArenaLeaderboard(db),
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(200, {
@@ -1912,6 +1841,13 @@ const server = http.createServer(async (req, res) => {
       const isStart = startStopMatch[2] === "start";
       if (isStart) {
         const targetBot = getBots().find((b) => b.bot_id === botId);
+        if (targetBot && Number(targetBot.is_selected_for_live || 0) !== 1) {
+          return sendJson(res, 200, {
+            success: false,
+            bot: targetBot,
+            message: `[${targetBot.nickname || targetBot.name}] 실제 거래 담당 봇으로 선택되지 않았습니다. 설정 화면에서 실전 봇(1~3개)으로 먼저 선택해주세요.`,
+          });
+        }
         if (!targetBot || Number(targetBot.allocated_capital || 0) <= 0) {
           return sendJson(res, 200, {
             success: false,
@@ -2094,12 +2030,216 @@ const server = http.createServer(async (req, res) => {
         (a, b) => b.trade_count - a.trade_count || b.yearly_profit - a.yearly_profit
       );
 
+      const botStatsMap = {};
+      for (const t of trades) {
+        const botKey = normalizeBotId(t.bot_id);
+        if (!botStatsMap[botKey]) {
+          botStatsMap[botKey] = { bot_id: botKey, trade_count: 0, completed_count: 0, win_count: 0, lose_count: 0, total_profit: 0 };
+        }
+        botStatsMap[botKey].trade_count += 1;
+        if (t.status === "COMPLETED" && t.profit_krw !== null) {
+          const bp = Math.floor(Number(t.profit_krw));
+          botStatsMap[botKey].completed_count += 1;
+          botStatsMap[botKey].total_profit += bp;
+          if (bp > 0) botStatsMap[botKey].win_count += 1;
+          else if (bp < 0) botStatsMap[botKey].lose_count += 1;
+        }
+      }
+
+      const botNameMap = {};
+      for (const b of db.prepare("SELECT bot_id, nickname, name FROM bots").all()) {
+        botNameMap[b.bot_id] = b.nickname || b.name;
+      }
+      const botRanking = Object.values(botStatsMap)
+        .map((bs) => {
+          const decided = bs.win_count + bs.lose_count;
+          return {
+            ...bs,
+            nickname: botNameMap[bs.bot_id] || bs.bot_id,
+            win_rate_pct: decided > 0 ? Number(((bs.win_count / decided) * 100).toFixed(1)) : 0,
+          };
+        })
+        .sort((a, b) => b.total_profit - a.total_profit);
+
       return sendJson(res, 200, {
+        mode,
         start_date: "2026.10.01",
         daily: buildSeries(dailyMap),
         weekly: buildSeries(weeklyMap),
         monthly: buildSeries(monthlyMap),
         coin_ranking: coinRanking,
+        bot_ranking: botRanking,
+      });
+    }
+
+    // ============================================================
+    // [10대 알고리즘 상시 가상 경쟁(Arena) REST API]
+    // ============================================================
+    if (pathname === "/api/arena/leaderboard" && req.method === "GET") {
+      const leaderboard = getArenaLeaderboard(db);
+      return sendJson(res, 200, {
+        success: true,
+        always_on: true,
+        llm_filter_bypassed: true,
+        leaderboard,
+        status: getArenaStatus(),
+        updated_at: nowKSTString(),
+      });
+    }
+
+    if (pathname === "/api/arena/trades" && req.method === "GET") {
+      const botId = parsedUrl.searchParams.get("bot_id");
+      const limit = Number(parsedUrl.searchParams.get("limit") || 100);
+      return sendJson(res, 200, {
+        success: true,
+        bot_id: botId || "all",
+        trades: getArenaTrades(db, botId, limit),
+      });
+    }
+
+    if (pathname === "/api/arena/run-cycle" && req.method === "POST") {
+      await runAlwaysOnPaperArenaCycle();
+      return sendJson(res, 200, {
+        success: true,
+        message: "순수 알고리즘 가상 시뮬레이션 1사이클이 실행되었습니다.",
+        leaderboard: getArenaLeaderboard(db),
+        status: getArenaStatus(),
+      });
+    }
+
+    if (pathname === "/api/arena/reset" && req.method === "POST") {
+      return sendJson(res, 200, await resetPaperArenaAndNotify(db));
+    }
+
+    // ============================================================
+    // [실전 담당 봇(1~3개) 선택 및 동적 투자금 배분 API]
+    // ============================================================
+    if (pathname === "/api/settings/live-bots" && req.method === "GET") {
+      const liveBots = getBots("live").filter((b) => Number(b.is_selected_for_live) === 1);
+      return sendJson(res, 200, {
+        success: true,
+        total_capital: Math.floor(Number(getSetting("total_capital", "0"))),
+        selected_bots: liveBots.map((b) => ({
+          bot_id: b.bot_id,
+          nickname: b.nickname,
+          allocation_ratio: Number((Number(b.allocation_ratio || 0) / 100).toFixed(4)),
+          allocated_capital: b.allocated_capital,
+          virtual_krw: b.virtual_krw,
+        })),
+      });
+    }
+
+    if (pathname === "/api/settings/live-bots" && req.method === "PUT") {
+      const body = await readJsonBody(req);
+      const selected = Array.isArray(body.selected_bots) ? body.selected_bots : [];
+      if (selected.length < 1 || selected.length > 3) {
+        return sendJson(res, 400, {
+          success: false,
+          detail: `실제 거래 담당 봇은 최소 1개 ~ 최대 3개까지 선택할 수 있습니다. (현재 ${selected.length}개)`,
+        });
+      }
+      const ids = selected.map((it) => normalizeBotId(String(it?.bot_id || "")));
+      if (new Set(ids).size !== ids.length) {
+        return sendJson(res, 400, { success: false, detail: "중복 선택된 봇이 있습니다." });
+      }
+      const allBots = getBots("live");
+      const unknown = ids.filter((id) => !allBots.some((b) => b.bot_id === id));
+      if (unknown.length > 0) {
+        return sendJson(res, 400, { success: false, detail: `존재하지 않는 봇입니다: ${unknown.join(", ")}` });
+      }
+      const ratios = selected.map((it) => Number(it?.allocation_ratio));
+      if (ratios.some((r) => !Number.isFinite(r) || r < 0 || r > 1)) {
+        return sendJson(res, 400, { success: false, detail: "봇별 투자 비율(allocation_ratio)은 0 ~ 1 사이 값이어야 합니다." });
+      }
+      const ratioSum = Number(ratios.reduce((a, b) => a + b, 0).toFixed(4));
+      if (Math.abs(ratioSum - 1.0) > 0.001) {
+        return sendJson(res, 400, {
+          success: false,
+          detail: `선택된 봇들의 투자 비율 합계는 정확히 100%(1.0)여야 합니다. (현재 ${(ratioSum * 100).toFixed(2)}%)`,
+        });
+      }
+      const flooredTotal = Math.floor(Number(body.total_capital || 0));
+      if (!(flooredTotal > 0)) {
+        return sendJson(res, 400, { success: false, detail: "총 실전 운용 원금(total_capital)은 0원보다 커야 합니다." });
+      }
+
+      // 실전 포지션 보호: 해제하려는 봇의 미청산 포지션 / 배정액이 이미 사용 금액보다 작아지는 경우 차단
+      const selectedIdSet = new Set(ids);
+      for (const b of allBots) {
+        if (!selectedIdSet.has(b.bot_id) && Number(b.used_capital || 0) > 0) {
+          return sendJson(res, 400, {
+            success: false,
+            detail: `[${b.nickname || b.name}] 봇이 실전 미청산 포지션(${Math.floor(b.used_capital).toLocaleString("ko-KR")}원)을 보유 중이라 선택 해제할 수 없습니다. 먼저 포지션을 청산해주세요.`,
+          });
+        }
+      }
+      const plan = selected.map((it, idx) => {
+        const bot = allBots.find((b) => b.bot_id === ids[idx]);
+        const allocated = Math.floor(flooredTotal * Number(it.allocation_ratio));
+        return { bot, ratio: Number(it.allocation_ratio), allocated, used: Math.floor(Number(bot.used_capital || 0)) };
+      });
+      const tooSmall = plan.find((pl) => pl.allocated < pl.used);
+      if (tooSmall) {
+        return sendJson(res, 400, {
+          success: false,
+          detail: `[${tooSmall.bot.nickname || tooSmall.bot.name}] 배정 투자금(${tooSmall.allocated.toLocaleString("ko-KR")}원)이 이미 사용된 투자금(${tooSmall.used.toLocaleString("ko-KR")}원)보다 작습니다.`,
+        });
+      }
+
+      // 업비트 총 보유 자산 한도 검증 (조회 가능한 경우에 한함)
+      const accountInfo = await fetchUpbitAccountBalance();
+      if (accountInfo?.success && accountInfo.total_asset_krw !== null && accountInfo.total_asset_krw !== undefined) {
+        const maxAssetLimit = Number(accountInfo.total_asset_krw);
+        if (flooredTotal > maxAssetLimit) {
+          return sendJson(res, 400, {
+            success: false,
+            detail: `설정하려는 총 실전 운용 원금(${flooredTotal.toLocaleString("ko-KR")}원)이 업비트 총 보유 자산(${maxAssetLimit.toLocaleString("ko-KR")}원)의 한도를 초과합니다.`,
+          });
+        }
+      }
+
+      const now = nowKSTString();
+      try {
+        db.exec("BEGIN");
+        db.prepare(`
+          UPDATE bots
+          SET is_selected_for_live = 0, is_running = 0, allocation_ratio = 0,
+              allocated_capital = 0, virtual_krw = 0, updated_at = ?
+          WHERE bot_id NOT IN (${ids.map(() => "?").join(",")})
+        `).run(now, ...ids);
+        for (const pl of plan) {
+          // 소수점 이하 버림(Math.floor) 배정 원금 및 가용 잔고(virtual_krw) 반영 (allocation_ratio 는 % 단위로 저장)
+          db.prepare(`
+            UPDATE bots
+            SET is_selected_for_live = 1, allocation_ratio = ?, allocated_capital = ?, virtual_krw = ?, updated_at = ?
+            WHERE bot_id = ?
+          `).run(Number((pl.ratio * 100).toFixed(2)), pl.allocated, Math.max(0, pl.allocated - pl.used), now, pl.bot.bot_id);
+        }
+        db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('total_capital', ?, ?)").run(String(flooredTotal), now);
+        db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('capital_configured', '1', ?)").run(now);
+        db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('zero_balance_halted', '0', ?)").run(now);
+        db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('zero_balance_reason', '', ?)").run(now);
+        db.exec("COMMIT");
+      } catch (err) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {}
+        return sendJson(res, 500, { success: false, detail: `실전 봇 설정 저장 실패: ${err.message}` });
+      }
+
+      const liveBots = getBots("live");
+      return sendJson(res, 200, {
+        success: true,
+        message: `실제 거래 담당 봇 ${plan.length}개와 투자금 배분(소수점 버림)이 저장되었습니다.`,
+        total_capital: flooredTotal,
+        selected_bots: plan.map((pl) => ({
+          bot_id: pl.bot.bot_id,
+          nickname: pl.bot.nickname,
+          allocation_ratio: pl.ratio,
+          allocated_capital: pl.allocated,
+          virtual_krw: Math.max(0, pl.allocated - pl.used),
+        })),
+        bots: liveBots,
       });
     }
 
@@ -2431,13 +2571,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ============================================================
-    // [알고리즘 검증소 (Algorithm Validation Lab) API]
+    // [하위 호환] 기존 알고리즘 검증소 엔드포인트 -> 10대 알고리즘 Arena 로 통합
     // ============================================================
     if (pathname === "/api/algo-lab/models" && req.method === "GET") {
-      const models = getAlgoLabModels(db);
       return sendJson(res, 200, {
         success: true,
-        models,
+        models: getArenaLeaderboard(db),
         updated_at: nowKSTString(),
       });
     }
@@ -2445,88 +2584,23 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/algo-lab/trades" && req.method === "GET") {
       const modelId = parsedUrl.searchParams.get("model_id");
       const limit = Number(parsedUrl.searchParams.get("limit") || 50);
-      const trades = getAlgoLabTrades(db, modelId, limit);
-      return sendJson(res, 200, {
-        success: true,
-        trades,
-      });
+      return sendJson(res, 200, { success: true, trades: getArenaTrades(db, modelId, limit) });
     }
 
-    // ============================================================
-    // [가상거래 초기화 (Paper Trades & Algo Lab Clean Reset) API]
-    // ============================================================
-    if (pathname === "/api/paper-trades/reset" && req.method === "POST") {
+    if ((pathname === "/api/paper-trades/reset" || pathname === "/api/algo-lab/reset") && req.method === "POST") {
       try {
-        db.exec(`
-          DELETE FROM paper_trades;
-          DELETE FROM paper_bot_positions;
-        `);
-        resetAlgoLab(db);
-        db.prepare(`
-          UPDATE bots
-          SET last_status_msg = '가상거래 초기화 완료 (새 거래 대기 중)',
-              updated_at = ?
-          WHERE 1=1
-        `).run(nowKSTString());
-
-        if (pgSyncManager.isConnected && pgSyncManager.pool) {
-          try {
-            await pgSyncManager.pool.query(`
-              DELETE FROM paper_trades;
-              DELETE FROM paper_bot_positions;
-              DELETE FROM algo_lab_positions;
-              DELETE FROM algo_lab_trades;
-            `);
-          } catch {}
-        }
-
-        // 즉시 새로운 가상 사이클 실행하여 0원부터 실시간 랭킹 산출 시작
-        setTimeout(async () => {
-          try {
-            await runBotStrategiesCycle();
-            await executeAlgoLabCycle();
-          } catch {}
-        }, 100);
-
-        return sendJson(res, 200, {
-          success: true,
-          message: "가상거래 이력 및 알고리즘 검증소가 성공적으로 초기화되었습니다. 실시간 시세를 바탕으로 처음부터 모의 체결 및 실시간 랭킹 산출이 시작됩니다.",
-        });
+        return sendJson(res, 200, await resetPaperArenaAndNotify(db));
       } catch (err) {
         return sendJson(res, 500, { success: false, message: `가상거래 초기화 실패: ${err.message}` });
       }
     }
 
-    if (pathname === "/api/algo-lab/reset" && req.method === "POST") {
-      resetAlgoLab(db);
-      if (pgSyncManager.isConnected && pgSyncManager.pool) {
-        try {
-          await pgSyncManager.pool.query(`
-            DELETE FROM algo_lab_positions;
-            DELETE FROM algo_lab_trades;
-          `);
-        } catch {}
-      }
-      setTimeout(async () => {
-        try {
-          await executeAlgoLabCycle();
-        } catch {}
-      }, 100);
-      const models = getAlgoLabModels(db);
-      return sendJson(res, 200, {
-        success: true,
-        message: "알고리즘 검증소 모든 모델이 초기 자본 1,000,000원으로 초기화되었습니다. 실시간 시세로 재평가를 시작합니다.",
-        models,
-      });
-    }
-
     if (pathname === "/api/algo-lab/run-cycle" && req.method === "POST") {
-      await executeAlgoLabCycle();
-      const models = getAlgoLabModels(db);
+      await runAlwaysOnPaperArenaCycle();
       return sendJson(res, 200, {
         success: true,
-        message: "실시간 알고리즘 검증 시뮬레이션이 1회 실행되었습니다.",
-        models,
+        message: "순수 알고리즘 가상 시뮬레이션 1사이클이 실행되었습니다.",
+        models: getArenaLeaderboard(db),
       });
     }
 
@@ -3280,38 +3354,57 @@ async function executeBotSellOrder(bot, pos, sellPrice, reasonLabel) {
   return true;
 }
 
-async function runBotStrategiesCycle() {
-  if (isStrategyCycleRunning) return;
-  isStrategyCycleRunning = true;
+// ============================================================================
+// 1. 실거래 매매 스케줄러 (선택된 1~3개 실전 봇 전용 - 기존 LLM/Regime 필터 100% 보존)
+// ============================================================================
+let isLiveCycleRunning = false;
+const liveBotPeakMap = new Map();
+
+async function runLiveTradingBotsCycle() {
+  if (isLiveCycleRunning) return;
+  isLiveCycleRunning = true;
   try {
-    const haltInfo = checkAndHaltIfZeroBalance();
+    const haltInfo = checkAndHaltIfZeroBalance("live");
     if (haltInfo.halted) return;
 
     const db = getDb();
-    const runningBots = getBots().filter((b) => Number(b.is_running) === 1 && Number(b.allocated_capital) > 0);
+    // 오직 실제 거래 담당(is_selected_for_live = 1)으로 선택되고 가동 중(is_running = 1)인 실전 봇만 실행
+    const runningBots = getBots("live").filter(
+      (b) => Number(b.is_selected_for_live) === 1 && Number(b.is_running) === 1 && Number(b.allocated_capital) > 0
+    );
     if (runningBots.length === 0) return;
 
     const allMarkets = [
-      "KRW-BTC",
-      "KRW-ETH",
-      "KRW-SOL",
-      "KRW-XRP",
-      "KRW-DOGE",
-      "KRW-SUI",
-      "KRW-AVAX",
-      "KRW-SHIB",
+      "KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-DOGE",
+      "KRW-SUI", "KRW-AVAX", "KRW-SHIB"
     ];
     const tickerMap = await fetchUpbitTickersMap(allMarkets);
-    if (tickerMap.size === 0) return;
+    if (!tickerMap || tickerMap.size === 0) return;
+
+    // 지표 패키지 사전 빌드 (공유 캐시 활용)
+    const mdMap = new Map();
+    for (const m of allMarkets) {
+      const tk = tickerMap.get(m);
+      if (tk) {
+        mdMap.set(m, await buildMarketData(m, tk, fetchUpbitCandlesSorted));
+      }
+    }
+    const { computeMomentumRanking } = await import("./common/algo_lab_service.mjs");
+    const rankMap = computeMomentumRanking(mdMap, allMarkets);
 
     for (const bot of runningBots) {
       const now = nowKSTString();
-      const todayStr = todayDateString();
       const stopLossPct = -Math.abs(Number(bot.stop_loss_pct || 2.5));
       const takeProfitPct = Math.abs(Number(bot.take_profit_pct || 4.5));
       const minVol = Number(bot.min_volume_krw || 0);
+      const cfg = bot.config || {};
+      const params = {
+        ...cfg,
+        stop_loss_pct: bot.stop_loss_pct,
+        take_profit_pct: bot.take_profit_pct,
+      };
 
-      // 1) 공통 손절/익절 및 1일 만기 청산 체크
+      // 1) 보유 포지션 손절/익절 및 알고리즘 SELL 시그널 평가
       for (const pos of bot.open_positions || []) {
         const tk = tickerMap.get(pos.market);
         if (!tk) continue;
@@ -3319,26 +3412,46 @@ async function runBotStrategiesCycle() {
         const avgBuy = Number(pos.avg_buy_price);
         const pnlPct = ((curPrice - avgBuy) / avgBuy) * 100.0;
 
+        // 트레일링 스탑용 고점 갱신
+        const peakKey = `live-${pos.id}`;
+        const curPeak = Math.max(Number(liveBotPeakMap.get(peakKey) || avgBuy), curPrice);
+        liveBotPeakMap.set(peakKey, curPeak);
+
         if (pnlPct <= stopLossPct) {
           await executeBotSellOrder(bot, pos, curPrice, `손절(${pnlPct.toFixed(2)}%)`);
+          liveBotPeakMap.delete(peakKey);
           continue;
         }
         if (pnlPct >= takeProfitPct) {
           await executeBotSellOrder(bot, pos, curPrice, `익절(+${pnlPct.toFixed(2)}%)`);
+          liveBotPeakMap.delete(peakKey);
           continue;
         }
-        if (bot.bot_id === "bot_volatility" && String(pos.created_at || "").slice(0, 10) < todayStr) {
-          await executeBotSellOrder(bot, pos, curPrice, "1일 보유 만기");
-          continue;
+
+        // 10대 알고리즘 전략별 청산 시그널 평가
+        const md = mdMap.get(pos.market);
+        if (md) {
+          const sig = evaluateStrategy(bot.bot_id, md, md.indicators, pos, {
+            params,
+            peakPrice: curPeak,
+            momentumRank: rankMap,
+            market: pos.market,
+          });
+          if (sig.signal === "SELL") {
+            await executeBotSellOrder(bot, pos, curPrice, sig.reason);
+            liveBotPeakMap.delete(peakKey);
+            continue;
+          }
         }
       }
 
-      const refreshedBot = getBots().find((b) => b.bot_id === bot.bot_id);
+      const refreshedBot = getBots("live").find((b) => b.bot_id === bot.bot_id);
       if (!refreshedBot || Number(refreshedBot.is_running) !== 1) continue;
       const heldSet = new Set((refreshedBot.open_positions || []).map((p) => p.market));
+      const maxPositions = Math.max(1, Number(cfg.max_positions || 2));
 
-      // [손실 방어 패치 1] 시장 체제 필터 (BTC Regime Filter):
-      // 대장주 KRW-BTC가 일봉 20MA 또는 4시간봉 60MA 하회 시 Bot 1, 2, 3 신규 매수 전면 중단 (Hold Cash)
+      // [실전 로직 필수 보존] 전체 봇 공통 시장 체제 필터 (BTC Regime Filter)
+      // 대장주 KRW-BTC가 일봉 20MA 또는 4시간봉 60MA 하회 시 신규 매수를 전면 차단(Hold Cash)
       const regimeInfo = await checkMarketRegimeFilter(tickerMap);
       if (!regimeInfo.allowBuy) {
         const holdingCount = (refreshedBot.open_positions || []).length;
@@ -3353,167 +3466,86 @@ async function runBotStrategiesCycle() {
         continue;
       }
 
-      // 2) 봇별 전략 평가 (상승 체제 시에만 진입)
-      if (bot.bot_id === "bot_volatility") {
-        const candidates = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-DOGE"].filter((m) => {
-          const tk = tickerMap.get(m);
-          return tk && Number(tk.acc_trade_price_24h || 0) >= minVol;
+      // 2) 신규 매수 시그널 탐색
+      let candidates = allMarkets.filter((m) => {
+        const tk = tickerMap.get(m);
+        return tk && Number(tk.acc_trade_price_24h || 0) >= minVol && mdMap.get(m);
+      });
+      if (bot.bot_id === "bot_03") {
+        candidates.sort((a, b) => (rankMap[a]?.rank || 99) - (rankMap[b]?.rank || 99));
+      }
+
+      let actionMsg = "";
+      for (const mkt of candidates) {
+        if (heldSet.has(mkt) && bot.bot_id !== "bot_06") continue;
+        if (!heldSet.has(mkt) && heldSet.size >= maxPositions) continue;
+
+        const md = mdMap.get(mkt);
+        const held = (refreshedBot.open_positions || []).filter((p) => p.market === mkt);
+        const sig = evaluateStrategy(bot.bot_id, md, md.indicators, held, {
+          params,
+          momentumRank: rankMap,
+          market: mkt,
         });
-        const kVal = Number(refreshedBot.config?.k_value || 0.4);
-        let summaryText = "";
 
-        for (const mkt of candidates) {
-          if (heldSet.has(mkt)) continue;
-          const candles = await fetchUpbitCandlesSorted(mkt, "days", 8);
-          if (candles.length < 8) continue;
-          const baseClose = Number(candles[0].trade_price); // iloc[-8]
-          const prevCandle = candles[candles.length - 2];
-          const currCandle = candles[candles.length - 1];
-          const targetPrice =
-            Number(currCandle.opening_price) +
-            (Number(prevCandle.high_price) - Number(prevCandle.low_price)) * kVal;
-          const curPrice = Number(currCandle.trade_price);
-
-          if (!summaryText) {
-            summaryText = `${mkt} 현재가 ${curPrice.toLocaleString("ko-KR")} / 돌파목표 ${Math.floor(targetPrice).toLocaleString("ko-KR")} (K=${kVal})`;
-          }
-
-          if (curPrice > baseClose && curPrice >= targetPrice && heldSet.size < 2) {
-            const orderKrw = getSafeOrderKrw(refreshedBot, Number(refreshedBot.config?.order_ratio || 0.3));
-            if (orderKrw >= 5000) {
-              await executeBotBuyOrder(refreshedBot, mkt, orderKrw, curPrice);
-              summaryText = `${mkt} 변동성 돌파 매수 체결 (${orderKrw.toLocaleString("ko-KR")}원)`;
+        if (sig.signal === "BUY") {
+          const orderKrw = getSafeOrderKrw(refreshedBot, Number(cfg.order_ratio || 0.3));
+          if (orderKrw >= 5000) {
+            const ok = await executeBotBuyOrder(refreshedBot, mkt, orderKrw, md.price);
+            if (ok) {
+              actionMsg = `${mkt} ${sig.reason} 매수 체결 (${orderKrw.toLocaleString("ko-KR")}원)`;
               break;
             }
           }
         }
+      }
+
+      if (!actionMsg) {
+        const holdCnt = heldSet.size;
+        const statusText = holdCnt > 0
+          ? `실시간 감시 중 (${holdCnt}건 포지션 보유 · 익절/손절 감시)`
+          : `실시간 감시 중: 신규 진입 시그널 탐색`;
         db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-          summaryText ? `실시간 감시 중: ${summaryText}` : `변동성 돌파(K=${kVal}) 대상 탐색 중`,
-          now,
-          bot.bot_id
-        );
-      } else if (bot.bot_id === "bot_dual_momentum") {
-        const candidates = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-SUI", "KRW-AVAX"].filter((m) => {
-          const tk = tickerMap.get(m);
-          return tk && Number(tk.acc_trade_price_24h || 0) >= minVol;
-        });
-        const absThreshold = Number(refreshedBot.config?.abs_momentum_threshold_pct || 1.5);
-        const scores = [];
-
-        for (const mkt of candidates) {
-          const candles = await fetchUpbitCandlesSorted(mkt, "minutes/240", 8);
-          if (candles.length < 8) continue;
-          const basePrice = Number(candles[0].trade_price); // iloc[-8]
-          const curPrice = Number(candles[candles.length - 1].trade_price);
-          if (basePrice <= 0) continue;
-          const momPct = ((curPrice - basePrice) / basePrice) * 100.0;
-          scores.push({ market: mkt, momPct, curPrice });
-        }
-        scores.sort((a, b) => b.momPct - a.momPct);
-
-        // 보유 종목 모멘텀 음수 전환 시 매도
-        for (const pos of refreshedBot.open_positions || []) {
-          const sc = scores.find((s) => s.market === pos.market);
-          if (sc && sc.momPct < 0) {
-            await executeBotSellOrder(refreshedBot, pos, sc.curPrice, "모멘텀 이탈");
-          }
-        }
-
-        let signalHandled = false;
-        if (heldSet.size < 2 && scores.length > 0) {
-          for (const cand of scores) {
-            if (heldSet.has(cand.market)) continue;
-            if (cand.momPct >= absThreshold) {
-              const orderKrw = getSafeOrderKrw(refreshedBot, Number(refreshedBot.config?.order_ratio || 0.35));
-              if (orderKrw >= 5000) {
-                signalHandled = true;
-                const ok = await executeBotBuyOrder(refreshedBot, cand.market, orderKrw, cand.curPrice);
-                if (ok) {
-                  db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                    `${cand.market} 듀얼 모멘텀(+${cand.momPct.toFixed(2)}%) 매수 체결 (${orderKrw.toLocaleString("ko-KR")}원)`,
-                    now,
-                    bot.bot_id
-                  );
-                }
-                break;
-              }
-            }
-          }
-        }
-
-        if (!signalHandled) {
-          const topText =
-            scores.length > 0
-              ? `1위 ${scores[0].market}(${scores[0].momPct >= 0 ? "+" : ""}${scores[0].momPct.toFixed(2)}% / 진입기준 +${absThreshold}%)`
-              : "유동성 필터 통과 종목 대기";
-          db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-            `실시간 감시 중: ${topText}`,
-            now,
-            bot.bot_id
-          );
-        }
-      } else if (bot.bot_id === "bot_bollinger_reversal") {
-        const candidates = ["KRW-SOL", "KRW-DOGE", "KRW-XRP", "KRW-SUI", "KRW-SHIB"].filter((m) => {
-          const tk = tickerMap.get(m);
-          return tk && Number(tk.acc_trade_price_24h || 0) >= minVol;
-        });
-        const bbStd = Number(refreshedBot.config?.bb_std || 2.0);
-        const bbPeriod = Math.max(Number(refreshedBot.config?.bb_period || 20), 8);
-        let summaryText = "";
-
-        for (const mkt of candidates) {
-          const candles = await fetchUpbitCandlesSorted(mkt, "minutes/15", bbPeriod);
-          if (candles.length < 8) continue;
-          const closes = candles.map((c) => Number(c.trade_price));
-          const mean = closes.reduce((a, b) => a + b, 0) / closes.length;
-          const variance = closes.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / closes.length;
-          const std = Math.sqrt(variance);
-          const lowerBand = mean - bbStd * std;
-          const curr = candles[candles.length - 1];
-          const curClose = Number(curr.trade_price);
-          const curLow = Number(curr.low_price);
-          const curOpen = Number(curr.opening_price);
-          const baseClose = Number(candles[candles.length - 8].trade_price); // iloc[-8]
-          const rsi = computeRsi(closes, 14);
-
-          // 보유 포지션 중심선 반등 시 익절
-          const heldPos = (refreshedBot.open_positions || []).find((p) => p.market === mkt);
-          if (heldPos && curClose >= mean && curClose > Number(heldPos.avg_buy_price) * 1.004) {
-            await executeBotSellOrder(refreshedBot, heldPos, curClose, "볼린저 중심선 회복");
-            continue;
-          }
-
-          if (!summaryText) {
-            summaryText = `${mkt} 현재가 ${curClose.toLocaleString("ko-KR")} / 하단밴드 ${Math.floor(lowerBand).toLocaleString("ko-KR")} (RSI ${rsi.toFixed(1)})`;
-          }
-
-          if (!heldSet.has(mkt) && heldSet.size < 2) {
-            const touchedLower = curLow <= lowerBand && curClose >= curOpen && rsi <= 40.0;
-            const oversold = rsi <= 30.0 && curClose < baseClose;
-            if (touchedLower || oversold) {
-              const orderKrw = getSafeOrderKrw(refreshedBot, Number(refreshedBot.config?.order_ratio || 0.45));
-              if (orderKrw >= 5000) {
-                const ok = await executeBotBuyOrder(refreshedBot, mkt, orderKrw, curClose);
-                if (ok) {
-                  summaryText = `${mkt} 볼린저 하단/과매도(RSI ${rsi.toFixed(1)}) 반등 매수 체결`;
-                  break;
-                }
-              }
-            }
-          }
-        }
-
-        db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-          summaryText ? `실시간 감시 중: ${summaryText}` : `볼린저 밴드(${bbStd}σ) 반등 탐색 중`,
+          statusText,
           now,
           bot.bot_id
         );
       }
     }
   } catch (err) {
-    console.error("Strategy cycle error:", err.message);
+    console.error("[LiveTradingCycle] Error:", err.message);
   } finally {
-    isStrategyCycleRunning = false;
+    isLiveCycleRunning = false;
+  }
+}
+
+// ============================================================================
+// 2. 가상거래 상시 경쟁 스케줄러 (10대 순수 알고리즘 Always-On Arena - LLM/Regime 필터 완전 우회)
+// ============================================================================
+let isPaperArenaCycleRunning = false;
+
+async function runAlwaysOnPaperArenaCycle() {
+  if (isPaperArenaCycleRunning) return;
+  isPaperArenaCycleRunning = true;
+  try {
+    const db = getDb();
+    if (!db) return;
+    await runArenaCycle(db, {
+      getUniverse: async () => {
+        const markets = await getValidKrwMarkets();
+        const major = [
+          "KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-DOGE",
+          "KRW-SUI", "KRW-AVAX", "KRW-SHIB", "KRW-ADA", "KRW-NEAR"
+        ];
+        return major.filter((m) => markets.has(m) || true);
+      },
+      fetchTickersMap: fetchUpbitTickersMap,
+      fetchCandles: fetchUpbitCandlesSorted,
+    });
+  } catch (err) {
+    console.warn("[AlwaysOnPaperArena] Cycle error:", err.message);
+  } finally {
+    isPaperArenaCycleRunning = false;
   }
 }
 
@@ -3579,32 +3611,7 @@ async function reconcileOpenPositionsWithUpbit() {
   }
 }
 
-let isAlgoLabCycleRunning = false;
-async function executeAlgoLabCycle() {
-  if (isAlgoLabCycleRunning) return;
-  isAlgoLabCycleRunning = true;
-  try {
-    const db = getDb();
-    if (!db) return;
-    const allMarkets = [
-      "KRW-BTC",
-      "KRW-ETH",
-      "KRW-SOL",
-      "KRW-XRP",
-      "KRW-DOGE",
-      "KRW-SUI",
-      "KRW-AVAX",
-      "KRW-SHIB",
-    ];
-    const tickerMap = await fetchUpbitTickersMap(allMarkets);
-    if (!tickerMap || tickerMap.size === 0) return;
-    await runAlgoLabCycle(db, tickerMap, fetchUpbitCandlesSorted);
-  } catch (err) {
-    console.warn("[AlgoLab] Cycle error:", err.message);
-  } finally {
-    isAlgoLabCycleRunning = false;
-  }
-}
+
 
 setTimeout(async () => {
   try {
@@ -3621,12 +3628,12 @@ setTimeout(async () => {
   } catch {}
 
   await reconcileOpenPositionsWithUpbit();
-  await runBotStrategiesCycle();
-  await executeAlgoLabCycle();
+  await runAlwaysOnPaperArenaCycle();
+  await runLiveTradingBotsCycle();
 }, 1000);
 
-setInterval(runBotStrategiesCycle, 10000);
-setInterval(executeAlgoLabCycle, 10000);
+setInterval(runAlwaysOnPaperArenaCycle, 9000);
+setInterval(runLiveTradingBotsCycle, 10000);
 
 // 30분 간격 암호화폐 뉴스 백그라운드 자동 수집
 setInterval(() => {
