@@ -770,14 +770,16 @@ export default function App() {
   // 실전 담당 봇 선택 토글 (최소 1개 ~ 최대 3개 제한)
   const handleToggleLiveBotSelection = (botId) => {
     setSelectedLiveBotIds((prev) => {
-      const isAlready = prev.includes(botId);
+      const validBotList = (algoModels.length > 0 ? algoModels : bots).map((b) => b.bot_id);
+      const sanitized = validBotList.length > 0 ? prev.filter((id) => validBotList.includes(id)) : [...prev];
+
+      const isAlready = sanitized.includes(botId);
       if (isAlready) {
-        if (prev.length <= 1) {
+        if (sanitized.length <= 1) {
           showModal("실전 봇 선택 제한", "실제 거래 담당 봇은 최소 1개 이상 선택해야 합니다.", "warning");
-          return prev;
+          return sanitized;
         }
-        const next = prev.filter((id) => id !== botId);
-        // 비율 재조정
+        const next = sanitized.filter((id) => id !== botId);
         setLiveAllocRatios((rPrev) => {
           const cp = { ...rPrev };
           delete cp[botId];
@@ -785,11 +787,15 @@ export default function App() {
         });
         return next;
       } else {
-        if (prev.length >= 3) {
-          showModal("실전 봇 선택 제한", "실제 거래 담당 봇은 최대 3개까지만 선택할 수 있습니다. 기존에 선택된 봇 하나를 해제한 뒤 선택해주세요.", "warning");
-          return prev;
+        if (sanitized.length >= 3) {
+          showModal(
+            "실전 봇 선택 제한 (최대 3개)",
+            "실제 거래 담당 봇은 최대 3개까지만 선택할 수 있습니다.\n기존에 선택된 봇 하나를 클릭하여 해제한 뒤 새로운 봇을 선택해주세요.",
+            "warning"
+          );
+          return sanitized;
         }
-        const next = [...prev, botId];
+        const next = [...sanitized, botId];
         return next;
       }
     });
@@ -1106,6 +1112,12 @@ export default function App() {
       if (liveIds.length > 0) {
         setSelectedLiveBotIds(liveIds);
         setLiveAllocRatios(liveRats);
+      } else if (botList.length > 0) {
+        const fallbackIds = botList.slice(0, 3).map((b) => b.bot_id);
+        setSelectedLiveBotIds(fallbackIds);
+        const fbRats = {};
+        fallbackIds.forEach((id, i) => { fbRats[id] = i === 0 ? 34 : 33; });
+        setLiveAllocRatios(fbRats);
       }
 
       // 요구사항 21: 설정된 잔고가 0 이하로 떨어져 모든 봇이 거래 중지된 경우 거래현황 진입 시 Modal Popup 표시
@@ -2500,7 +2512,8 @@ export default function App() {
 
             {/* 실전 담당 봇 탭 구분 (선택된 1~3개 실전 봇만 동적 노출) */}
             {(() => {
-              const liveBots = bots.filter((b) => Number(b.is_selected_for_live) === 1);
+              const matched = bots.filter((b) => Number(b.is_selected_for_live) === 1 || selectedLiveBotIds.includes(b.bot_id));
+              const liveBots = matched.length > 0 ? matched : bots.slice(0, 3);
               if (liveBots.length === 0) {
                 return (
                   <div
@@ -4097,7 +4110,7 @@ export default function App() {
                   {(algoModels.length > 0 ? algoModels : bots).map((bot, idx) => {
                     const isSelected = selectedLiveBotIds.includes(bot.bot_id);
                     const rank = bot.rank || idx + 1;
-                    const retPct = bot.total_return_pct ?? 0;
+                    const retPct = bot.total_return_pct ?? bot.profit_rate_pct ?? 0;
                     return (
                       <div
                         key={bot.bot_id}
@@ -4118,8 +4131,8 @@ export default function App() {
                             <input
                               type="checkbox"
                               checked={isSelected}
-                              onChange={() => {}}
-                              style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "#3b82f6" }}
+                              readOnly
+                              style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "#3b82f6", pointerEvents: "none" }}
                             />
                             <span style={{ fontWeight: 800, fontSize: "14px", color: isSelected ? "#93c5fd" : "#f1f5f9" }}>
                               {bot.nickname || bot.name}
