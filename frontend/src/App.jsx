@@ -375,14 +375,34 @@ function MarkdownViewer({ content, isStreaming = false }) {
   );
 }
 
+function getTodayKSTDateString() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function isDailyGateAuthValid() {
+  const today = getTodayKSTDateString();
+  const hasAuth =
+    sessionStorage.getItem("autoCoinTrade_auth") === "true" ||
+    localStorage.getItem("autoCoinTrade_auth") === "true";
+  const savedDate =
+    localStorage.getItem("autoCoinTrade_auth_date") ||
+    sessionStorage.getItem("autoCoinTrade_auth_date") ||
+    "";
+  if (!hasAuth || savedDate !== today) {
+    sessionStorage.removeItem("autoCoinTrade_auth");
+    localStorage.removeItem("autoCoinTrade_auth");
+    sessionStorage.removeItem("autoCoinTrade_auth_date");
+    localStorage.removeItem("autoCoinTrade_auth_date");
+    return false;
+  }
+  return true;
+}
+
 export default function App() {
-  // 1) 입장 코드 인증 상태 (요구사항 6: sws@2129, 새로고침 시 인증 및 현재 페이지 유지)
-  const [authenticated, setAuthenticated] = useState(() => {
-    return (
-      sessionStorage.getItem("autoCoinTrade_auth") === "true" ||
-      localStorage.getItem("autoCoinTrade_auth") === "true"
-    );
-  });
+  // 1) 입장 코드 인증 상태 (날짜 변경 시 자동 만료 및 재인증 요구)
+  const [authenticated, setAuthenticated] = useState(() => isDailyGateAuthValid());
   const [entryCodeInput, setEntryCodeInput] = useState("");
   const [gateError, setGateError] = useState("");
 
@@ -475,7 +495,19 @@ export default function App() {
     has_key: false,
     masked_key: "",
     latest: null,
+    last_trigger_type: "MANUAL",
   });
+  const [geminiQuota, setGeminiQuota] = useState({
+    daily_total_limit: 20,
+    auto_reserved_count: 6,
+    manual_limit: 14,
+    manual_used: 0,
+    auto_used: 0,
+    remaining_calls: 14,
+    schedule_hours: [0, 4, 8, 12, 16, 20],
+    next_scheduled_at: "",
+  });
+  const [geminiQuotaNotice, setGeminiQuotaNotice] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
   const [aiKeyInput, setAiKeyInput] = useState("");
@@ -489,6 +521,7 @@ export default function App() {
   const typewriterQueueRef = useRef("");
   const typingTimerRef = useRef(null);
   const isStreamDoneRef = useRef(false);
+  const isAiBusyRef = useRef(false);
 
   // 8) 뉴스 피드 상태 (요구사항: 50건 페이지네이션, 날짜/키워드 검색)
   const [newsList, setNewsList] = useState([]);
@@ -931,21 +964,37 @@ export default function App() {
     }
   };
 
-  const fetchAiBriefing = async () => {
+  const fetchAiBriefing = async (silent = false) => {
+    if (silent && isAiBusyRef.current) return;
     try {
       const resp = await fetch(`${API_BASE}/api/ai/briefing`);
       if (resp.ok) {
         const data = await resp.json();
         setAiBriefing(data);
+        if (data.quota) {
+          setGeminiQuota(data.quota);
+        }
       }
     } catch (err) {
-      console.error("Failed to fetch AI briefing:", err);
+      if (!silent) {
+        console.error("Failed to fetch AI briefing:", err);
+      }
     }
   };
 
   const triggerAiAnalysis = async () => {
+    if (geminiQuota && Number(geminiQuota.remaining_calls) <= 0) {
+      showModal(
+        "무료 API 호출 한도 안내",
+        "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+        "warning"
+      );
+      return;
+    }
+
     setIsAiBriefingExpanded(true);
     setAiLoading(true);
+    isAiBusyRef.current = true;
     setAiError("");
     setStreamingText("");
     setStreamingMeta(null);
@@ -959,15 +1008,33 @@ export default function App() {
 
       if (!resp.ok) {
         let errMsg = `분석 요청 실패 (HTTP ${resp.status})`;
+        let isQuotaExceeded = resp.status === 429;
         try {
           const errData = await resp.json();
           errMsg = errData.message || errMsg;
-          if (errData.error === "NO_API_KEY") {
+          if (errData.quota) {
+            setGeminiQuota(errData.quota);
+          }
+          if (errData.error === "DAILY_QUOTA_EXCEEDED" || resp.status === 429) {
+            isQuotaExceeded = true;
+          } else if (errData.error === "NO_API_KEY") {
             setShowAiKeyConfig(true);
           }
         } catch {}
-        setAiError(errMsg);
+
         setAiLoading(false);
+        isAiBusyRef.current = false;
+
+        if (isQuotaExceeded) {
+          showModal(
+            "무료 API 호출 한도 안내",
+            "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+            "warning"
+          );
+          return;
+        }
+
+        setAiError(errMsg);
         return;
       }
 
@@ -997,12 +1064,27 @@ export default function App() {
               if (data.type === "meta") {
                 capturedMeta = data;
                 setStreamingMeta(data);
+                if (data.quota) {
+                  setGeminiQuota(data.quota);
+                  setGeminiQuotaNotice(
+                    `금일 자동 분석 예약(${data.quota.auto_reserved_count}건) 제외 남은 무료 API 호출 건수: ${data.quota.remaining_calls}건 (일일 수동 한도 ${data.quota.manual_limit}건 중 ${data.quota.manual_used}건 사용)`
+                  );
+                }
               } else if (data.type === "chunk" && data.text) {
                 typewriterQueueRef.current += data.text;
               } else if (data.type === "done") {
                 isStreamDoneRef.current = true;
+                isAiBusyRef.current = false;
+                if (data.quota) {
+                  setGeminiQuota(data.quota);
+                  setGeminiQuotaNotice(
+                    `금일 자동 분석 예약(${data.quota.auto_reserved_count}건) 제외 남은 무료 API 호출 건수: ${data.quota.remaining_calls}건 (일일 수동 한도 ${data.quota.manual_limit}건 중 ${data.quota.manual_used}건 사용)`
+                  );
+                }
                 setAiBriefing((prev) => ({
                   ...prev,
+                  last_trigger_type: data.trigger_type || "MANUAL",
+                  quota: data.quota || prev.quota,
                   latest: {
                     id: data.id,
                     provider: "gemini",
@@ -1018,6 +1100,7 @@ export default function App() {
               } else if (data.type === "error") {
                 setAiError(data.message || "스트리밍 중 오류가 발생했습니다.");
                 isStreamDoneRef.current = true;
+                isAiBusyRef.current = false;
               }
             } catch {}
           }
@@ -1025,10 +1108,12 @@ export default function App() {
       }
 
       isStreamDoneRef.current = true;
+      isAiBusyRef.current = false;
     } catch (err) {
       setAiError(`서버 연결 오류: ${err.message}`);
       setIsStreaming(false);
       setAiLoading(false);
+      isAiBusyRef.current = false;
     }
   };
 
@@ -1052,6 +1137,9 @@ export default function App() {
           has_key: data.has_key,
           masked_key: data.masked_key,
         }));
+        if (data.quota) {
+          setGeminiQuota(data.quota);
+        }
         setAiKeyInput("");
         setShowAiKeyConfig(false);
         showModal(
@@ -1069,13 +1157,14 @@ export default function App() {
     }
   };
 
-  // 입장 코드 검증 (기본: stock)
+  // 입장 코드 검증 (기본: stock, 날짜가 바뀌면 재인증 요구)
   const handleVerifyEntryCode = async (e) => {
     e.preventDefault();
     setGateError("");
     const trimmed = entryCodeInput.trim();
     // 한글 자판 상태에서 stock을 입력한 경우(ㄴ새차) 자동 영문 변환
     const normalized = trimmed === "ㄴ새차" ? "stock" : trimmed;
+    const today = getTodayKSTDateString();
 
     try {
       const resp = await fetch(`${API_BASE}/api/auth/verify`, {
@@ -1086,6 +1175,9 @@ export default function App() {
       if (resp.ok) {
         sessionStorage.setItem("autoCoinTrade_auth", "true");
         localStorage.setItem("autoCoinTrade_auth", "true");
+        sessionStorage.setItem("autoCoinTrade_auth_date", today);
+        localStorage.setItem("autoCoinTrade_auth_date", today);
+        setEntryCodeInput("");
         setAuthenticated(true);
       } else {
         const err = await resp.json().catch(() => ({}));
@@ -1096,12 +1188,36 @@ export default function App() {
       if (normalized.toLowerCase() === "stock") {
         sessionStorage.setItem("autoCoinTrade_auth", "true");
         localStorage.setItem("autoCoinTrade_auth", "true");
+        sessionStorage.setItem("autoCoinTrade_auth_date", today);
+        localStorage.setItem("autoCoinTrade_auth_date", today);
+        setEntryCodeInput("");
         setAuthenticated(true);
       } else {
         setGateError("서버 연결 실패 또는 입장 코드가 일치하지 않습니다.");
       }
     }
   };
+
+  // 날짜 변경(자정 경과) 실시간 감지: 하루가 지나 날짜가 바뀌면 즉시 인증 화면으로 전환
+  useEffect(() => {
+    if (!authenticated) return;
+    const checkDateExpiration = () => {
+      if (!isDailyGateAuthValid()) {
+        setAuthenticated(false);
+        setEntryCodeInput("");
+        setGateError("날짜가 변경되어 보안을 위해 인증이 만료되었습니다. 입장 코드를 다시 입력해주세요.");
+      }
+    };
+    const dateTimer = setInterval(checkDateExpiration, 5000);
+    const handleVisibilityOrFocus = () => checkDateExpiration();
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    return () => {
+      clearInterval(dateTimer);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+    };
+  }, [authenticated]);
 
   // 업비트 통신 상태 주기적 조회
   const fetchUpbitStatus = async () => {
@@ -1331,6 +1447,7 @@ export default function App() {
       refreshBotsStatusOnly();
       fetchTrades(selectedBotId);
       fetchTradeMode();
+      fetchAiBriefing(true);
     }, 6000);
     return () => clearInterval(timer);
   }, [authenticated, selectedBotId, fetchTradeMode, fetchAlgoLabModels, fetchEntryCode]);
@@ -1405,6 +1522,9 @@ export default function App() {
       if (resp.ok) {
         const data = await resp.json();
         setNewsAiBriefing(data);
+        if (data.quota) {
+          setGeminiQuota(data.quota);
+        }
       }
     } catch (err) {
       console.warn("Failed to fetch news AI briefing:", err);
@@ -1412,6 +1532,15 @@ export default function App() {
   };
 
   const triggerNewsAiAnalysis = async () => {
+    if (geminiQuota && Number(geminiQuota.remaining_calls) <= 0) {
+      showModal(
+        "무료 API 호출 한도 안내",
+        "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+        "warning"
+      );
+      return;
+    }
+
     setIsNewsAiExpanded(true);
     setNewsAiLoading(true);
     setNewsStreamingText("");
@@ -1426,15 +1555,30 @@ export default function App() {
 
       if (!resp.ok) {
         let errMsg = `AI 분석 요청 실패 (HTTP ${resp.status})`;
+        let isQuotaExceeded = resp.status === 429;
         try {
           const errData = await resp.json();
           errMsg = errData.message || errMsg;
-          if (errData.error === "NO_API_KEY") {
+          if (errData.quota) {
+            setGeminiQuota(errData.quota);
+          }
+          if (errData.error === "DAILY_QUOTA_EXCEEDED" || resp.status === 429) {
+            isQuotaExceeded = true;
+          } else if (errData.error === "NO_API_KEY") {
             setShowAiKeyConfig(true);
           }
         } catch {}
-        setNewsStreamingText(`⚠️ ${errMsg}`);
+
         setNewsAiLoading(false);
+        if (isQuotaExceeded) {
+          showModal(
+            "무료 API 호출 한도 안내",
+            "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+            "warning"
+          );
+          return;
+        }
+        setNewsStreamingText(`⚠️ ${errMsg}`);
         return;
       }
 
@@ -1462,12 +1606,25 @@ export default function App() {
               const data = JSON.parse(jsonStr);
               if (data.type === "meta") {
                 setNewsStreamingMeta(data);
+                if (data.quota) {
+                  setGeminiQuota(data.quota);
+                  setGeminiQuotaNotice(
+                    `금일 자동 분석 예약(${data.quota.auto_reserved_count}건) 제외 남은 무료 API 호출 건수: ${data.quota.remaining_calls}건 (일일 수동 한도 ${data.quota.manual_limit}건 중 ${data.quota.manual_used}건 사용)`
+                  );
+                }
               } else if (data.type === "chunk" && data.text) {
                 newsTypewriterQueueRef.current += data.text;
               } else if (data.type === "done") {
                 isNewsStreamDoneRef.current = true;
+                if (data.quota) {
+                  setGeminiQuota(data.quota);
+                  setGeminiQuotaNotice(
+                    `금일 자동 분석 예약(${data.quota.auto_reserved_count}건) 제외 남은 무료 API 호출 건수: ${data.quota.remaining_calls}건 (일일 수동 한도 ${data.quota.manual_limit}건 중 ${data.quota.manual_used}건 사용)`
+                  );
+                }
                 setNewsAiBriefing((prev) => ({
                   ...prev,
+                  quota: data.quota || prev.quota,
                   latest: {
                     id: data.id,
                     provider: "gemini",
@@ -2303,10 +2460,30 @@ export default function App() {
                     >
                       {aiBriefing?.latest?.model ? aiBriefing.latest.model.replace("models/", "") : "Gemini 3.5 Flash"}
                     </span>
+                    <span
+                      style={{
+                        marginLeft: "6px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        padding: "2px 8px",
+                        borderRadius: "12px",
+                        background: "rgba(56, 189, 248, 0.15)",
+                        color: "#38bdf8",
+                        border: "1px solid rgba(56, 189, 248, 0.35)",
+                      }}
+                      title={
+                        geminiQuota?.next_scheduled_at
+                          ? `매일 0시, 4시, 8시, 12시, 16시, 20시 정각 자동 분석 (다음 자동 분석: ${geminiQuota.next_scheduled_at})`
+                          : "매일 0시, 4시, 8시, 12시, 16시, 20시 4시간 간격 자동 분석"
+                      }
+                    >
+                      ⏰ 0·4·8·12·16·20시 자동갱신
+                    </span>
                   </div>
                   {aiBriefing?.latest && (
                     <span style={{ fontSize: "12px", color: "#94a3b8" }}>
-                      (분석 시각: {aiBriefing.latest.created_at})
+                      (분석 시각: {aiBriefing.latest.created_at} ·{" "}
+                      {aiBriefing?.last_trigger_type === "AUTO" ? "자동 분석" : "수동 분석"})
                     </span>
                   )}
                   {/* 접혀있을 때 간략 요약 뱃지 표시 */}
@@ -2343,6 +2520,38 @@ export default function App() {
                 </div>
 
                 <div className="ai-briefing-action-btns">
+                  <span
+                    style={{
+                      fontSize: "11.5px",
+                      fontWeight: 700,
+                      padding: "5px 10px",
+                      borderRadius: "8px",
+                      background:
+                        Number(geminiQuota?.remaining_calls ?? 14) <= 0
+                          ? "rgba(239, 68, 68, 0.18)"
+                          : Number(geminiQuota?.remaining_calls ?? 14) <= 3
+                          ? "rgba(234, 179, 8, 0.18)"
+                          : "rgba(16, 185, 129, 0.16)",
+                      color:
+                        Number(geminiQuota?.remaining_calls ?? 14) <= 0
+                          ? "#f87171"
+                          : Number(geminiQuota?.remaining_calls ?? 14) <= 3
+                          ? "#facc15"
+                          : "#34d399",
+                      border: `1px solid ${
+                        Number(geminiQuota?.remaining_calls ?? 14) <= 0
+                          ? "rgba(239, 68, 68, 0.4)"
+                          : Number(geminiQuota?.remaining_calls ?? 14) <= 3
+                          ? "rgba(234, 179, 8, 0.4)"
+                          : "rgba(16, 185, 129, 0.35)"
+                      }`,
+                    }}
+                    title={`일일 무료 한도 총 ${geminiQuota?.daily_total_limit ?? 20}건 중 4시간 간격 자동 분석 예약 ${geminiQuota?.auto_reserved_count ?? 6}건을 제외한 수동 호출 잔여 건수`}
+                  >
+                    무료 API 잔여: {geminiQuota?.remaining_calls ?? 14}/{geminiQuota?.manual_limit ?? 14}건 (자동예약{" "}
+                    {geminiQuota?.auto_reserved_count ?? 6}건 제외)
+                  </span>
+
                   <button
                     type="button"
                     className="btn"
@@ -2375,7 +2584,7 @@ export default function App() {
                         Gemini 연결 중...
                       </>
                     ) : (
-                      <>⚡ AI 시황 분석 요청</>
+                      <>⚡ AI 시황 분석 요청 ({geminiQuota?.remaining_calls ?? 14}건 남음)</>
                     )}
                   </button>
 
@@ -2506,6 +2715,36 @@ export default function App() {
                       ⚠️ {aiError}
                     </div>
                   )}
+
+                  {/* Gemini 무료 API 호출 잔여 건수 & 4시간 간격 자동 분석 스케줄 안내 바 */}
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: "8px",
+                      fontSize: "12px",
+                      color: "#cbd5e1",
+                      background: "rgba(15, 23, 42, 0.55)",
+                      border: "1px solid rgba(99, 102, 241, 0.25)",
+                      borderRadius: "8px",
+                      padding: "8px 14px",
+                      marginBottom: "14px",
+                    }}
+                  >
+                    <div>
+                      📊{" "}
+                      <strong style={{ color: "#38bdf8" }}>
+                        {geminiQuotaNotice ||
+                          `금일 자동 분석 예약(${geminiQuota?.auto_reserved_count ?? 6}건) 제외 남은 무료 API 호출 건수: ${geminiQuota?.remaining_calls ?? 14}건 / ${geminiQuota?.manual_limit ?? 14}건`}
+                      </strong>
+                    </div>
+                    <div style={{ color: "#94a3b8", fontSize: "11.5px" }}>
+                      매일 0시 · 4시 · 8시 · 12시 · 16시 · 20시 자동 분석 실행
+                      {geminiQuota?.next_scheduled_at ? ` (다음 예약: ${geminiQuota.next_scheduled_at})` : ""}
+                    </div>
+                  </div>
 
                   {/* 아직 API 키가 없고 분석 기록도 없을 때의 안내 */}
                   {!aiBriefing?.has_key && !aiBriefing?.latest && !aiLoading && !isStreaming && (
@@ -3563,6 +3802,30 @@ export default function App() {
                 </div>
 
                 <div className="news-ai-action-btns">
+                  <span
+                    style={{
+                      fontSize: "11.5px",
+                      fontWeight: 700,
+                      padding: "6px 10px",
+                      borderRadius: "8px",
+                      background:
+                        Number(geminiQuota?.remaining_calls ?? 14) <= 0
+                          ? "rgba(239, 68, 68, 0.18)"
+                          : "rgba(16, 185, 129, 0.16)",
+                      color:
+                        Number(geminiQuota?.remaining_calls ?? 14) <= 0
+                          ? "#f87171"
+                          : "#34d399",
+                      border: `1px solid ${
+                        Number(geminiQuota?.remaining_calls ?? 14) <= 0
+                          ? "rgba(239, 68, 68, 0.4)"
+                          : "rgba(16, 185, 129, 0.35)"
+                      }`,
+                    }}
+                  >
+                    무료 API 잔여: {geminiQuota?.remaining_calls ?? 14}/{geminiQuota?.manual_limit ?? 14}건
+                  </span>
+
                   <button
                     type="button"
                     className="btn btn-primary"
@@ -3581,7 +3844,13 @@ export default function App() {
                     }}
                   >
                     <span>{isNewsStreaming || newsAiLoading ? "⏳" : "⚡"}</span>
-                    <span>{isNewsStreaming ? "AI 분석 스트리밍 중..." : newsAiLoading ? "AI 분석 준비 중..." : "AI 분석하기"}</span>
+                    <span>
+                      {isNewsStreaming
+                        ? "AI 분석 스트리밍 중..."
+                        : newsAiLoading
+                        ? "AI 분석 준비 중..."
+                        : `AI 분석하기 (${geminiQuota?.remaining_calls ?? 14}건 남음)`}
+                    </span>
                   </button>
 
                   <button

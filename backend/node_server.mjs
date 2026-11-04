@@ -892,15 +892,107 @@ function saveGeminiApiKey(key) {
   return cleanKey;
 }
 
+// ============================================================================
+// Gemini 무료 API 일일 쿼터 및 4시간 간격(0, 4, 8, 12, 16, 20시) 자동 분석 스케줄 관리
+// - Google Gemini Free Tier 일일 무료 호출 한도: 20회/일
+// - 4시간 간격 자동 분석 예약 건수(0시, 4시, 8시, 12시, 16시, 20시): 하루 6회 고정 제외
+// - 사용자 수동 호출 가능 무료 API 한도: 20 - 6 = 14회/일
+// ============================================================================
+const GEMINI_DAILY_TOTAL_FREE_LIMIT = 20;
+const AI_SCHEDULE_HOURS = [0, 4, 8, 12, 16, 20];
+const GEMINI_DAILY_AUTO_RESERVED = AI_SCHEDULE_HOURS.length; // 6회
+const GEMINI_DAILY_MANUAL_LIMIT = GEMINI_DAILY_TOTAL_FREE_LIMIT - GEMINI_DAILY_AUTO_RESERVED; // 14회
+
+function getNextScheduledAiAnalysisAt() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const curHour = now.getHours();
+  const nextHourToday = AI_SCHEDULE_HOURS.find((h) => h > curHour);
+  const target = new Date(now);
+  if (nextHourToday !== undefined) {
+    target.setHours(nextHourToday, 0, 0, 0);
+  } else {
+    target.setDate(target.getDate() + 1);
+    target.setHours(AI_SCHEDULE_HOURS[0], 0, 0, 0);
+  }
+  return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())} ${pad(target.getHours())}:00:00`;
+}
+
+function getGeminiQuotaStatus() {
+  const db = getDb();
+  const today = todayDateString();
+  const now = nowKSTString();
+  const storedDate = getSetting("gemini_usage_date", "");
+
+  if (storedDate !== today) {
+    db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('gemini_usage_date', ?, ?)").run(today, now);
+    db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('gemini_manual_used', '0', ?)").run(now);
+    db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('gemini_auto_used', '0', ?)").run(now);
+  }
+
+  const manualUsed = Math.max(0, Math.floor(Number(getSetting("gemini_manual_used", "0")) || 0));
+  const autoUsed = Math.max(0, Math.floor(Number(getSetting("gemini_auto_used", "0")) || 0));
+  const remainingCalls = Math.max(0, GEMINI_DAILY_MANUAL_LIMIT - manualUsed);
+
+  return {
+    date: today,
+    daily_total_limit: GEMINI_DAILY_TOTAL_FREE_LIMIT,
+    auto_reserved_count: GEMINI_DAILY_AUTO_RESERVED,
+    manual_limit: GEMINI_DAILY_MANUAL_LIMIT,
+    manual_used: manualUsed,
+    auto_used: autoUsed,
+    remaining_calls: remainingCalls,
+    schedule_hours: AI_SCHEDULE_HOURS,
+    next_scheduled_at: getNextScheduledAiAnalysisAt(),
+    last_auto_slot: getSetting("ai_briefing_last_auto_slot", ""),
+    last_trigger_type: getSetting("ai_briefing_last_trigger_type", "MANUAL"),
+  };
+}
+
+function consumeGeminiQuota(triggerType = "MANUAL") {
+  const db = getDb();
+  const status = getGeminiQuotaStatus();
+  const now = nowKSTString();
+
+  if (triggerType === "AUTO") {
+    const nextAuto = status.auto_used + 1;
+    db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('gemini_auto_used', ?, ?)").run(
+      String(nextAuto),
+      now
+    );
+  } else {
+    const nextManual = Math.min(GEMINI_DAILY_MANUAL_LIMIT, status.manual_used + 1);
+    db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('gemini_manual_used', ?, ?)").run(
+      String(nextManual),
+      now
+    );
+  }
+  return getGeminiQuotaStatus();
+}
+
+function markGeminiManualQuotaExhausted() {
+  const db = getDb();
+  getGeminiQuotaStatus();
+  const now = nowKSTString();
+  db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('gemini_manual_used', ?, ?)").run(
+    String(GEMINI_DAILY_MANUAL_LIMIT),
+    now
+  );
+  return getGeminiQuotaStatus();
+}
+
 function getLatestAiBriefing() {
   const db = getDb();
   const row = db.prepare("SELECT * FROM ai_market_briefings ORDER BY id DESC LIMIT 1").get();
   const apiKey = getGeminiApiKey();
   const maskedKey = apiKey ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}` : "";
+  const quota = getGeminiQuotaStatus();
   return {
     has_key: !!apiKey,
     masked_key: maskedKey,
     latest: row || null,
+    last_trigger_type: quota.last_trigger_type,
+    quota,
   };
 }
 
@@ -909,20 +1001,35 @@ function getLatestAiNewsBriefing() {
   const row = db.prepare("SELECT * FROM ai_news_briefings ORDER BY id DESC LIMIT 1").get();
   const apiKey = getGeminiApiKey();
   const maskedKey = apiKey ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}` : "";
+  const quota = getGeminiQuotaStatus();
   return {
     has_key: !!apiKey,
     masked_key: maskedKey,
     latest: row || null,
+    quota,
   };
 }
 
-async function generateAiMarketAnalysis() {
+async function generateAiMarketAnalysis(options = {}) {
+  const triggerType = options?.triggerType === "AUTO" ? "AUTO" : "MANUAL";
+  const slotKey = options?.slotKey || null;
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     return {
       success: false,
       error: "NO_API_KEY",
       message: "Gemini API 키가 등록되지 않았습니다. config/upbit_config.json 파일의 gemini_api_key 항목에 키를 입력하시거나 웹 화면에서 등록해주세요.",
+      quota: getGeminiQuotaStatus(),
+    };
+  }
+
+  const quotaBefore = getGeminiQuotaStatus();
+  if (triggerType === "MANUAL" && quotaBefore.remaining_calls <= 0) {
+    return {
+      success: false,
+      error: "DAILY_QUOTA_EXCEEDED",
+      message: "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+      quota: quotaBefore,
     };
   }
 
@@ -1064,15 +1171,17 @@ ${b.open_positions
 
   // 6. Gemini API 호출 (최신 사용 가능 모델 자동 탐색 & 폴백)
   const candidateModels = [
+    "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
     "gemini-3.8-flash",
     "gemini-flash-latest",
-    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",
   ];
 
-  let chosenModel = "gemini-3.5-flash";
+  let chosenModel = "gemini-3.5-flash-lite";
   let analysisText = "";
   let lastErrorMsg = "";
+  let quota429Count = 0;
 
   for (const model of candidateModels) {
     try {
@@ -1080,7 +1189,7 @@ ${b.open_positions
         apiKey
       )}`;
       const controller = new AbortController();
-      const timeoutTimer = setTimeout(() => controller.abort(), 35000);
+      const timeoutTimer = setTimeout(() => controller.abort(), 60000);
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1105,6 +1214,9 @@ ${b.open_positions
         }
       } else {
         const errText = await response.text();
+        if (response.status === 429) {
+          quota429Count += 1;
+        }
         console.warn(`[Gemini API] Model ${model} failed (HTTP ${response.status}):`, errText);
         try {
           const errJson = JSON.parse(errText);
@@ -1120,14 +1232,24 @@ ${b.open_positions
   }
 
   if (!analysisText) {
+    if (quota429Count === candidateModels.length && triggerType === "MANUAL") {
+      const exhaustedQuota = markGeminiManualQuotaExhausted();
+      return {
+        success: false,
+        error: "DAILY_QUOTA_EXCEEDED",
+        message: "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+        quota: exhaustedQuota,
+      };
+    }
     return {
       success: false,
       error: "API_CALL_FAILED",
       message: `Gemini API 호출 실패: ${lastErrorMsg || "응답 텍스트를 생성하지 못했습니다."}`,
+      quota: getGeminiQuotaStatus(),
     };
   }
 
-  // 7. DB 저장
+  // 7. DB 저장 및 쿼터 차감
   const insertStmt = db.prepare(`
     INSERT INTO ai_market_briefings (
       provider, model, btc_price, btc_daily_20ma, btc_4h_60ma, regime_status, briefing_text, created_at
@@ -1144,8 +1266,20 @@ ${b.open_positions
     nowStr
   );
 
+  db.prepare(
+    "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('ai_briefing_last_trigger_type', ?, ?)"
+  ).run(triggerType, nowStr);
+  if (triggerType === "AUTO" && slotKey) {
+    db.prepare(
+      "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('ai_briefing_last_auto_slot', ?, ?)"
+    ).run(slotKey, nowStr);
+  }
+  const updatedQuota = consumeGeminiQuota(triggerType);
+
   return {
     success: true,
+    trigger_type: triggerType,
+    quota: updatedQuota,
     briefing: {
       id: info.lastInsertRowid,
       provider: "gemini",
@@ -1156,6 +1290,7 @@ ${b.open_positions
       regime_status: isHoldCash ? "HOLD_CASH" : "NORMAL",
       briefing_text: analysisText,
       created_at: nowStr,
+      trigger_type: triggerType,
     },
   };
 }
@@ -1169,6 +1304,21 @@ async function generateAiMarketAnalysisStream(req, res) {
         success: false,
         error: "NO_API_KEY",
         message: "Gemini API 키가 등록되지 않았습니다. config/upbit_config.json 파일의 gemini_api_key 항목에 키를 입력하시거나 웹 화면에서 등록해주세요.",
+        quota: getGeminiQuotaStatus(),
+      })
+    );
+    return;
+  }
+
+  const quotaBefore = getGeminiQuotaStatus();
+  if (quotaBefore.remaining_calls <= 0) {
+    res.writeHead(429, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+    res.end(
+      JSON.stringify({
+        success: false,
+        error: "DAILY_QUOTA_EXCEEDED",
+        message: "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+        quota: quotaBefore,
       })
     );
     return;
@@ -1311,14 +1461,16 @@ ${b.open_positions
 이모지와 깔끔한 불릿포인트, 굵은 글씨를 활용하여 가독성을 극대화해주세요.`;
 
   const candidateModels = [
+    "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
     "gemini-3.8-flash",
     "gemini-flash-latest",
-    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",
   ];
 
   let geminiResp = null;
   let chosenModel = candidateModels[0];
+  let quota429Count = 0;
 
   for (const model of candidateModels) {
     try {
@@ -1342,6 +1494,9 @@ ${b.open_positions
         break;
       } else {
         const errTxt = await resp.text();
+        if (resp.status === 429) {
+          quota429Count += 1;
+        }
         console.warn(`[Gemini Stream] Model ${model} failed (HTTP ${resp.status}):`, errTxt);
       }
     } catch (e) {
@@ -1350,16 +1505,36 @@ ${b.open_positions
   }
 
   if (!geminiResp) {
+    if (quota429Count === candidateModels.length) {
+      const exhaustedQuota = markGeminiManualQuotaExhausted();
+      res.writeHead(429, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+      res.end(
+        JSON.stringify({
+          success: false,
+          error: "DAILY_QUOTA_EXCEEDED",
+          message: "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+          quota: exhaustedQuota,
+        })
+      );
+      return;
+    }
     res.writeHead(502, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
     res.end(
       JSON.stringify({
         success: false,
         error: "API_CALL_FAILED",
         message: "사용 가능한 Gemini 스트리밍 모델 연결에 실패했습니다.",
+        quota: getGeminiQuotaStatus(),
       })
     );
     return;
   }
+
+  // 수동 스트리밍 호출 성공 시 즉시 수동 쿼터 1회 차감 및 트리거 기록
+  db.prepare(
+    "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('ai_briefing_last_trigger_type', 'MANUAL', ?)"
+  ).run(nowStr);
+  const updatedQuota = consumeGeminiQuota("MANUAL");
 
   // SSE 헤더 전송
   res.writeHead(200, {
@@ -1369,7 +1544,7 @@ ${b.open_positions
     "Access-Control-Allow-Origin": "*",
   });
 
-  // 메타데이터 이벤트 전송
+  // 메타데이터 이벤트 전송 (차감 후 남은 무료 호출 건수 포함)
   res.write(
     `data: ${JSON.stringify({
       type: "meta",
@@ -1379,6 +1554,8 @@ ${b.open_positions
       regime_status: isHoldCash ? "HOLD_CASH" : "NORMAL",
       model: chosenModel,
       created_at: nowStr,
+      trigger_type: "MANUAL",
+      quota: updatedQuota,
     })}\n\n`
   );
 
@@ -1450,12 +1627,14 @@ ${b.open_positions
         model: chosenModel,
         full_text: fullText,
         created_at: nowStr,
+        trigger_type: "MANUAL",
+        quota: updatedQuota,
       })}\n\n`
     );
     res.end();
   } catch (streamErr) {
     console.error("Error during streaming Gemini response:", streamErr);
-    res.write(`data: ${JSON.stringify({ type: "error", message: streamErr.message })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "error", message: streamErr.message, quota: updatedQuota })}\n\n`);
     res.end();
   }
 }
@@ -1469,6 +1648,21 @@ async function generateAiNewsAnalysisStream(req, res) {
         success: false,
         error: "NO_API_KEY",
         message: "Gemini API 키가 등록되지 않았습니다. 설정 화면에서 API 키를 등록해주세요.",
+        quota: getGeminiQuotaStatus(),
+      })
+    );
+    return;
+  }
+
+  const quotaBefore = getGeminiQuotaStatus();
+  if (quotaBefore.remaining_calls <= 0) {
+    res.writeHead(429, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+    res.end(
+      JSON.stringify({
+        success: false,
+        error: "DAILY_QUOTA_EXCEEDED",
+        message: "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+        quota: quotaBefore,
       })
     );
     return;
@@ -1567,6 +1761,7 @@ ${newsSummaryList}
 
   let geminiResp = null;
   let chosenModel = candidateModels[0];
+  let sawQuota429 = false;
 
   for (const model of candidateModels) {
     try {
@@ -1590,6 +1785,9 @@ ${newsSummaryList}
         break;
       } else {
         const errTxt = await resp.text();
+        if (resp.status === 429) {
+          sawQuota429 = true;
+        }
         console.warn(`[Gemini News Stream] Model ${model} failed (HTTP ${resp.status}):`, errTxt);
       }
     } catch (e) {
@@ -1598,16 +1796,33 @@ ${newsSummaryList}
   }
 
   if (!geminiResp) {
+    if (sawQuota429) {
+      const exhaustedQuota = markGeminiManualQuotaExhausted();
+      res.writeHead(429, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+      res.end(
+        JSON.stringify({
+          success: false,
+          error: "DAILY_QUOTA_EXCEEDED",
+          message: "금일 무료 api 호출 한도에 도달했습니다. 내일 다시 시도해주세요",
+          quota: exhaustedQuota,
+        })
+      );
+      return;
+    }
     res.writeHead(502, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
     res.end(
       JSON.stringify({
         success: false,
         error: "API_CALL_FAILED",
         message: "사용 가능한 Gemini 스트리밍 모델 연결에 실패했습니다.",
+        quota: getGeminiQuotaStatus(),
       })
     );
     return;
   }
+
+  // 수동 뉴스 AI 분석 호출 시에도 수동 쿼터 1회 차감
+  const updatedQuota = consumeGeminiQuota("MANUAL");
 
   // SSE 헤더 전송
   res.writeHead(200, {
@@ -1627,6 +1842,7 @@ ${newsSummaryList}
       bearish_count: bearCount,
       neutral_count: neutCount,
       created_at: nowStr,
+      quota: updatedQuota,
     })}\n\n`
   );
 
@@ -1701,12 +1917,13 @@ ${newsSummaryList}
         neutral_count: neutCount,
         full_text: fullText,
         created_at: nowStr,
+        quota: updatedQuota,
       })}\n\n`
     );
     res.end();
   } catch (streamErr) {
     console.error("Error during streaming Gemini news response:", streamErr);
-    res.write(`data: ${JSON.stringify({ type: "error", message: streamErr.message })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "error", message: streamErr.message, quota: updatedQuota })}\n\n`);
     res.end();
   }
 }
@@ -1806,6 +2023,13 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, data);
     }
 
+    if (pathname === "/api/ai/quota" && req.method === "GET") {
+      return sendJson(res, 200, {
+        success: true,
+        quota: getGeminiQuotaStatus(),
+      });
+    }
+
     if (pathname === "/api/ai/save-key" && req.method === "POST") {
       const body = await readJsonBody(req);
       const key = (body?.gemini_api_key || "").trim();
@@ -1814,12 +2038,14 @@ const server = http.createServer(async (req, res) => {
         success: true,
         has_key: !!key,
         masked_key: key ? `${key.slice(0, 6)}...${key.slice(-4)}` : "",
+        quota: getGeminiQuotaStatus(),
       });
     }
 
     if (pathname === "/api/ai/analyze" && req.method === "POST") {
-      const result = await generateAiMarketAnalysis();
-      return sendJson(res, result.success ? 200 : 400, result);
+      const result = await generateAiMarketAnalysis({ triggerType: "MANUAL" });
+      const statusCode = result.success ? 200 : result.error === "DAILY_QUOTA_EXCEEDED" ? 429 : 400;
+      return sendJson(res, statusCode, result);
     }
 
     if (pathname === "/api/ai/stream-analyze" && (req.method === "POST" || req.method === "GET")) {
@@ -3671,6 +3897,53 @@ async function reconcileOpenPositionsWithUpbit() {
 
 
 
+// ============================================================================
+// 3. AI 실시간 시장 분석 & 봇 진단 4시간 간격(0시, 4시, 8시, 12시, 16시, 20시) 자동 실행 스케줄러
+// - 사용자가 수동으로 분석을 요청했더라도 정해진 시각(0, 4, 8, 12, 16, 20시)에는 반드시 자동 분석 수행
+// ============================================================================
+let isScheduledAiAnalysisRunning = false;
+let lastScheduledAiFailureMs = 0;
+
+async function checkAndRunScheduledAiMarketAnalysis() {
+  if (isScheduledAiAnalysisRunning) return;
+  try {
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) return;
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const curHour = now.getHours();
+    const slotHour = Math.floor(curHour / 4) * 4;
+    const slotKey = `${today}_${pad(slotHour)}`;
+
+    const lastAutoSlot = getSetting("ai_briefing_last_auto_slot", "");
+    if (lastAutoSlot === slotKey) {
+      return;
+    }
+
+    if (lastScheduledAiFailureMs > 0 && Date.now() - lastScheduledAiFailureMs < 5 * 60 * 1000) {
+      return;
+    }
+
+    isScheduledAiAnalysisRunning = true;
+    console.log(`[AI Auto Analysis] 4시간 정기 슬롯(${slotKey}) 자동 시장 분석 & 봇 진단을 시작합니다...`);
+    const result = await generateAiMarketAnalysis({ triggerType: "AUTO", slotKey });
+    if (result.success) {
+      lastScheduledAiFailureMs = 0;
+      console.log(`[AI Auto Analysis] 4시간 정기 슬롯(${slotKey}) 자동 분석 완료 (모델: ${result.briefing?.model})`);
+    } else {
+      lastScheduledAiFailureMs = Date.now();
+      console.warn(`[AI Auto Analysis] 4시간 정기 슬롯(${slotKey}) 자동 분석 실패:`, result.message);
+    }
+  } catch (err) {
+    lastScheduledAiFailureMs = Date.now();
+    console.warn("[AI Auto Analysis] Scheduler error:", err.message);
+  } finally {
+    isScheduledAiAnalysisRunning = false;
+  }
+}
+
 setTimeout(async () => {
   try {
     await pgSyncManager.connect();
@@ -3688,10 +3961,12 @@ setTimeout(async () => {
   await reconcileOpenPositionsWithUpbit();
   await runAlwaysOnPaperArenaCycle();
   await runLiveTradingBotsCycle();
+  await checkAndRunScheduledAiMarketAnalysis();
 }, 1000);
 
 setInterval(runAlwaysOnPaperArenaCycle, 9000);
 setInterval(runLiveTradingBotsCycle, 10000);
+setInterval(checkAndRunScheduledAiMarketAnalysis, 10000);
 
 // 30분 간격 암호화폐 뉴스 백그라운드 자동 수집
 setInterval(() => {
@@ -3702,5 +3977,6 @@ setInterval(() => {
     }
   } catch {}
 }, 30 * 60 * 1000);
+
 
 
